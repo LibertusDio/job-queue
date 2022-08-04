@@ -3,9 +3,7 @@ package jobqueue
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,12 +18,16 @@ type foreman struct {
 	Cfg            *QueueConfig
 	Store          JobStorage
 	WorkerCounter  int
+	WorkerSignal   map[string]chan bool
+	Working        *bool
+	SignalLock     sync.Mutex
 	Logger         Logger
 	middleware     []MiddlewareFunc
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	pl := make(map[string]position)
+	working := true
 	return &foreman{
 		ProductionLine: pl,
 		Cfg:            config,
@@ -33,6 +35,8 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 		Logger:         logger,
 		WorkerCounter:  0,
 		middleware:     make([]MiddlewareFunc, 0),
+		Working:        &working,
+		WorkerSignal:   make(map[string]chan bool),
 	}
 }
 
@@ -71,7 +75,7 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 }
 
 func (f foreman) Serve() error {
-	for {
+	for *f.Working {
 		if f.WorkerCounter >= f.Cfg.Concurrent {
 			// TODO: change to governer
 			time.Sleep(time.Duration(f.Cfg.RampTime) * time.Second)
@@ -83,6 +87,10 @@ func (f foreman) Serve() error {
 
 			// get a job
 			job, err := f.Store.GetAndLockAvailableJob(f.Cfg.JobDescription)
+			strikeChannel := make(chan bool)
+			f.SignalLock.Lock()
+			f.WorkerSignal[job.ID] = strikeChannel
+			f.SignalLock.Unlock()
 			if err != nil && err != CommonError.NOT_FOUND {
 				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
 				return
@@ -111,13 +119,11 @@ func (f foreman) Serve() error {
 
 			// run job
 			ctx, ctxCancel := context.WithTimeout(context.Background(), time.Duration(jd.TTL+2)*time.Second)
-			// TODO: proper strike
-			osSignal := make(chan os.Signal, 1)
-			signal.Notify(osSignal, syscall.SIGINT, syscall.SIGTERM)
 
 			// start worker
 			go func(ctx context.Context, worker position) {
 				defer ctxCancel()
+				f.Logger.Debug("Start job: " + job.ID)
 				ctx = context.WithValue(ctx, ContextJobKey, job)
 				if err := f.applyMiddlewares(f.applyMiddlewares(worker.Func, f.middleware...), worker.Midl...)(ctx); err != nil {
 					job.Result = err.Error()
@@ -126,17 +132,19 @@ func (f foreman) Serve() error {
 			}(ctx, worker)
 			//wait for job to complete or strike
 			select {
-			case <-osSignal:
+			case <-strikeChannel:
 				f.Logger.Error("Strike job: " + job.ID)
 				ctxCancel()
 				return
 			case <-ctx.Done():
 				// close(c)
-				close(osSignal)
+				f.SignalLock.Lock()
+				delete(f.WorkerSignal, job.ID)
+				f.SignalLock.Unlock()
+				close(strikeChannel)
 				if ctx.Err() == context.DeadlineExceeded {
 					// timeout
 					f.Logger.Warn("Terminate job: " + job.ID)
-
 					if job.Try >= jd.MaxRetry {
 						job.Status = JobStatus.MAX_RETRY
 					} else {
@@ -159,9 +167,17 @@ func (f foreman) Serve() error {
 		}()
 		time.Sleep(time.Duration(f.Cfg.RampTime) * time.Second)
 	}
+	return CommonError.TERMINATING
 }
 func (f foreman) Strike(ttl int) error {
-	f.Logger.Error("Strike by SIGTERM")
+	*f.Working = false
+	for k, s := range f.WorkerSignal {
+		f.SignalLock.Lock()
+		s <- true
+		delete(f.WorkerSignal, k)
+		f.SignalLock.Unlock()
+	}
+	time.Sleep(time.Duration(ttl) * time.Second)
 	return nil
 }
 

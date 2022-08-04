@@ -8,6 +8,7 @@ type commonerror struct {
 	INVALID_WORKER error
 	INVALID_PL     error
 	NOT_FOUND      error
+	TERMINATING    error
 }
 
 var CommonError = commonerror{
@@ -16,6 +17,7 @@ var CommonError = commonerror{
 	INVALID_WORKER: errors.New("invalid worker"),
 	INVALID_PL:     errors.New("invalid production line"),
 	NOT_FOUND:      errors.New("not found"),
+	TERMINATING:    errors.New("terminating"),
 }
 
 type jobstatus struct {
