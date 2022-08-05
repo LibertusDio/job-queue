@@ -9,36 +9,83 @@ import (
 	"github.com/google/uuid"
 )
 
+//OndemandGovernor ondemand governor
+type OndemandGovernor struct {
+	MaxSleep      int
+	MinSleep      int
+	CurSleep      *int
+	WorkerCounter *int
+	MaxWorker     int
+}
+
+func (g OndemandGovernor) AddJob() {
+	*g.CurSleep = g.MinSleep
+	*g.WorkerCounter += 1
+}
+
+func (g OndemandGovernor) DelJob() {
+	*g.WorkerCounter -= 1
+}
+
+func (g OndemandGovernor) NoJob() {
+	t := *g.CurSleep
+	t *= 2
+	if t > g.MaxSleep {
+		t = g.MaxSleep
+	}
+	*g.CurSleep = t
+}
+
+func (g OndemandGovernor) Spawn() bool {
+	if *g.WorkerCounter < g.MaxWorker {
+		return true
+	}
+	time.Sleep(time.Duration(*g.CurSleep) * time.Millisecond)
+	g.NoJob()
+	return false
+}
+
+func (g OndemandGovernor) GetCounter() int {
+	return *g.WorkerCounter
+}
+
 type position struct {
 	Func HandlerFunc
 	Midl []MiddlewareFunc
 }
 type foreman struct {
-	ProductionLine map[string]position
-	Cfg            *QueueConfig
-	Store          JobStorage
-	WorkerCounter  *int
-	WorkerSignal   map[string]chan bool
-	Working        *bool
-	SignalLock     *sync.Mutex
-	Logger         Logger
+	productionLine map[string]position
+	cfg            *QueueConfig
+	store          JobStorage
+	workerSignal   map[string]chan bool
+	working        *bool
+	signalLock     *sync.Mutex
+	logger         Logger
 	middleware     []MiddlewareFunc
+	governor       governor
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	pl := make(map[string]position)
 	working := true
 	counter := 0
+	t := 1000
 	return &foreman{
-		ProductionLine: pl,
-		Cfg:            config,
-		Store:          store,
-		Logger:         logger,
-		WorkerCounter:  &counter,
-		SignalLock:     new(sync.Mutex),
+		productionLine: pl,
+		cfg:            config,
+		store:          store,
+		logger:         logger,
+		signalLock:     new(sync.Mutex),
 		middleware:     make([]MiddlewareFunc, 0),
-		Working:        &working,
-		WorkerSignal:   make(map[string]chan bool),
+		working:        &working,
+		workerSignal:   make(map[string]chan bool),
+		governor: OndemandGovernor{
+			WorkerCounter: &counter,
+			MaxWorker:     config.Concurrent,
+			MaxSleep:      1000,
+			MinSleep:      10,
+			CurSleep:      &t,
+		},
 	}
 }
 
@@ -47,16 +94,16 @@ func (f foreman) AddMiddleware(midl ...MiddlewareFunc) {
 }
 
 func (f foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...MiddlewareFunc) error {
-	_, ok := f.Cfg.JobDescription[title]
+	_, ok := f.cfg.JobDescription[title]
 	if !ok {
 		return JobError.INVALID_JD
 	}
 
-	f.ProductionLine[title] = position{Func: workerfunc, Midl: midl}
+	f.productionLine[title] = position{Func: workerfunc, Midl: midl}
 	return nil
 }
 func (f foreman) AddJob(ctx context.Context, job *Job) error {
-	jd, ok := f.Cfg.JobDescription[job.Title]
+	jd, ok := f.cfg.JobDescription[job.Title]
 	if !ok {
 		return JobError.INVALID_JOB
 	}
@@ -69,7 +116,7 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 		job.Priority = jd.Priority
 	}
 
-	err := f.Store.CreateJob(ctx, job)
+	err := f.store.CreateJob(ctx, job)
 	if err != nil {
 		return err
 	}
@@ -77,52 +124,51 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 }
 
 func (f foreman) Serve() error {
-	for *f.Working {
-		if *f.WorkerCounter >= f.Cfg.Concurrent {
-			// TODO: change to governer
-			time.Sleep(time.Duration(f.Cfg.RampTime) * time.Millisecond)
+	for *f.working {
+		if !f.governor.Spawn() {
 			continue
 		}
-		*f.WorkerCounter++
-		go func() {
-			defer func() { *f.WorkerCounter-- }()
+		// get a job
+		j, err := f.store.GetAndLockAvailableJob(f.cfg.JobDescription)
+		strikeChannel := make(chan bool, 1)
 
-			// get a job
-			job, err := f.Store.GetAndLockAvailableJob(f.Cfg.JobDescription)
-			strikeChannel := make(chan bool, 1)
-			f.SignalLock.Lock()
-			f.WorkerSignal[job.ID] = strikeChannel
-			f.SignalLock.Unlock()
-			if err != nil && err != JobError.NOT_FOUND {
-				f.Logger.Error("fetch job error:" + err.Error())
-				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
-				return
-			}
+		if err != nil && err != JobError.NOT_FOUND {
+			f.logger.Error("fetch job error:" + err.Error())
+			return err
+		}
 
-			if err == JobError.NOT_FOUND {
-				f.Logger.Info("no job")
-				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
-				return
-			}
+		if err == JobError.NOT_FOUND {
+			f.logger.Info("no job")
+			f.governor.NoJob()
+			continue
+		}
+
+		f.governor.AddJob()
+
+		go func(job *Job) {
+
+			f.signalLock.Lock()
+			f.workerSignal[j.ID] = strikeChannel
+			f.signalLock.Unlock()
 
 			// get job support
-			worker, ok := f.ProductionLine[job.Title]
+			worker, ok := f.productionLine[job.Title]
 			if !ok {
 				job.Status = JobStatus.ERROR
 				job.Message = JobError.INVALID_PL.Error()
-				err = f.Store.UpdateJobResult(job)
+				err = f.store.UpdateJobResult(job)
 				if err != nil {
-					f.Logger.Error("update job error:" + err.Error())
+					f.logger.Error("update job error:" + err.Error())
 				}
 			}
 
-			jd, ok := f.Cfg.JobDescription[job.Title]
+			jd, ok := f.cfg.JobDescription[job.Title]
 			if !ok {
 				job.Status = JobStatus.ERROR
 				job.Message = JobError.INVALID_JD.Error()
-				err = f.Store.UpdateJobResult(job)
+				err = f.store.UpdateJobResult(job)
 				if err != nil {
-					f.Logger.Error("update job error:" + err.Error())
+					f.logger.Error("update job error:" + err.Error())
 				}
 			}
 
@@ -132,7 +178,7 @@ func (f foreman) Serve() error {
 			// start worker
 			go func(ctx context.Context, worker position) {
 				defer ctxCancel()
-				f.Logger.Debug("Start job: " + job.ID)
+				f.logger.Debug("Start job: " + job.ID)
 				ctx = context.WithValue(ctx, ContextJobKey, job)
 				if err := f.applyMiddlewares(f.applyMiddlewares(worker.Func, f.middleware...), worker.Midl...)(ctx); err != nil {
 					job.Result = err.Error()
@@ -142,18 +188,19 @@ func (f foreman) Serve() error {
 			//wait for job to complete or strike
 			select {
 			case <-strikeChannel:
-				f.Logger.Error("Strike job: " + job.ID)
+				f.logger.Error("Strike job: " + job.ID)
 				ctxCancel()
+				f.governor.DelJob()
 				return
 			case <-ctx.Done():
 				// close(c)
-				f.SignalLock.Lock()
-				delete(f.WorkerSignal, job.ID)
-				f.SignalLock.Unlock()
+				f.signalLock.Lock()
+				delete(f.workerSignal, job.ID)
+				f.signalLock.Unlock()
 				close(strikeChannel)
 				if ctx.Err() == context.DeadlineExceeded {
 					// timeout
-					f.Logger.Warn("Terminate job: " + job.ID)
+					f.logger.Warn("Terminate job: " + job.ID)
 					if job.Try >= jd.MaxRetry {
 						job.Status = JobStatus.MAX_RETRY
 					} else {
@@ -163,33 +210,33 @@ func (f foreman) Serve() error {
 				}
 				if ctx.Err() == context.Canceled {
 					// job done
-					f.Logger.Debug("Complete job: " + fmt.Sprintf("%v", job))
+					f.logger.Debug("Complete job: " + fmt.Sprintf("%v", job))
 				}
 
 			}
 			// update job status
 			job.Try += 1
 			job.Priority *= 2
-			if err := f.Store.UpdateJobResult(job); err != nil {
-				f.Logger.Error("Update job: " + fmt.Sprintf("%v", job))
+			if err := f.store.UpdateJobResult(job); err != nil {
+				f.logger.Error("Update job: " + fmt.Sprintf("%v", job))
 			}
-		}()
-		time.Sleep(time.Duration(f.Cfg.RampTime) * time.Millisecond)
+			f.governor.DelJob()
+		}(j)
 	}
 	return JobError.TERMINATING
 }
 
 func (f foreman) Strike(ttl int) error {
-	f.Logger.Info("Stopping Foreman")
-	*f.Working = false
-	f.Logger.Info("Waiting for graceful shutdown")
+	f.logger.Info("Stopping Foreman")
+	*f.working = false
+	f.logger.Info("Waiting for graceful shutdown")
 	time.Sleep(time.Duration(ttl) * time.Second)
-	f.Logger.Warn("Striking remaining job")
-	for k, s := range f.WorkerSignal {
-		f.SignalLock.Lock()
+	f.logger.Warn("Striking remaining job")
+	for k, s := range f.workerSignal {
+		f.signalLock.Lock()
 		s <- true
-		delete(f.WorkerSignal, k)
-		f.SignalLock.Unlock()
+		delete(f.workerSignal, k)
+		f.signalLock.Unlock()
 	}
 	return nil
 }
@@ -202,5 +249,5 @@ func (f foreman) applyMiddlewares(h HandlerFunc, m ...MiddlewareFunc) HandlerFun
 }
 
 func (f foreman) GetCounter() int {
-	return *f.WorkerCounter
+	return f.governor.GetCounter()
 }

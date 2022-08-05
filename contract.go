@@ -41,3 +41,11 @@ type Logger interface {
 	Fatal(msg string)
 	Panic(msg string)
 }
+
+type governor interface {
+	AddJob()
+	DelJob()
+	NoJob()
+	Spawn() bool
+	GetCounter() int
+}
