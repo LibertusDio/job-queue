@@ -2,7 +2,7 @@ package jobqueue
 
 import "errors"
 
-type commonerror struct {
+type joberror struct {
 	INVALID_JD     error
 	INVALID_JOB    error
 	INVALID_WORKER error
@@ -11,7 +11,7 @@ type commonerror struct {
 	TERMINATING    error
 }
 
-var CommonError = commonerror{
+var JobError = joberror{
 	INVALID_JD:     errors.New("invalid job description"),
 	INVALID_JOB:    errors.New("invalid job"),
 	INVALID_WORKER: errors.New("invalid worker"),

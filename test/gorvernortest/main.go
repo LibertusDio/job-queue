@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	jobqueue "github.com/LibertusDio/job-queue"
@@ -29,7 +30,7 @@ func main() {
 	logger := utils.DumpLogger{}
 	queue := jobqueue.NewForeman(cfg, store{}, logger)
 	queue.AddWorker("test", func(ctx context.Context) error {
-		time.Sleep(30 * time.Second)
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Second)
 		return nil
 	})
 	go func() { logger.Error(fmt.Sprint(queue.Serve())) }()
@@ -40,7 +41,7 @@ func main() {
 		}
 	}()
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(30 * time.Second)
 	queue.Strike(5)
 	time.Sleep(5 * time.Second)
 }
@@ -52,6 +53,9 @@ func (s store) CreateJob(ctx context.Context, job *jobqueue.Job) error {
 	return nil
 }
 func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription) (*jobqueue.Job, error) {
+	if rand.Intn(10) == 0 {
+		return nil, jobqueue.JobError.NOT_FOUND
+	}
 	return &jobqueue.Job{
 		ID:       uuid.NewString(),
 		JobID:    uuid.NewString(),
