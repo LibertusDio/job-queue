@@ -15,7 +15,7 @@ type QueueConfig struct {
 	JobDescription map[string]JobDescription `mapstructure:"job_description" yaml:"job_description" json:"job_description"`
 	CleanError     bool                      `yaml:"clean_error" mapstructure:"clean_error" json:"clean_error"` // will the GC clear maxed try job
 	Concurrent     int                       `yaml:"concurrent" mapstructure:"concurrent" json:"concurrent"`    // number of workers can be run, will ignore JD.Concurrent if it >
-	BreakTime      int                       `mapstructure:"break_time" yaml:"break_time" json:"break_time"`    // seconds, break between loop
+	BreakTime      int                       `mapstructure:"break_time" yaml:"break_time" json:"break_time"`    // miliseconds, break between loop
 	RampTime       int                       `mapstructure:"ramp_time" yaml:"ramp_time" json:"ramp_time"`
 }
 

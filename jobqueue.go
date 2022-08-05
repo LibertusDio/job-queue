@@ -17,10 +17,10 @@ type foreman struct {
 	ProductionLine map[string]position
 	Cfg            *QueueConfig
 	Store          JobStorage
-	WorkerCounter  int
+	WorkerCounter  *int
 	WorkerSignal   map[string]chan bool
 	Working        *bool
-	SignalLock     sync.Mutex
+	SignalLock     *sync.Mutex
 	Logger         Logger
 	middleware     []MiddlewareFunc
 }
@@ -28,12 +28,14 @@ type foreman struct {
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	pl := make(map[string]position)
 	working := true
+	counter := 0
 	return &foreman{
 		ProductionLine: pl,
 		Cfg:            config,
 		Store:          store,
 		Logger:         logger,
-		WorkerCounter:  0,
+		WorkerCounter:  &counter,
+		SignalLock:     new(sync.Mutex),
 		middleware:     make([]MiddlewareFunc, 0),
 		Working:        &working,
 		WorkerSignal:   make(map[string]chan bool),
@@ -47,7 +49,7 @@ func (f foreman) AddMiddleware(midl ...MiddlewareFunc) {
 func (f foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...MiddlewareFunc) error {
 	_, ok := f.Cfg.JobDescription[title]
 	if !ok {
-		return CommonError.INVALID_JD
+		return JobError.INVALID_JD
 	}
 
 	f.ProductionLine[title] = position{Func: workerfunc, Midl: midl}
@@ -56,7 +58,7 @@ func (f foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...Middlew
 func (f foreman) AddJob(ctx context.Context, job *Job) error {
 	jd, ok := f.Cfg.JobDescription[job.Title]
 	if !ok {
-		return CommonError.INVALID_JOB
+		return JobError.INVALID_JOB
 	}
 
 	if job.ID == "" {
@@ -76,22 +78,22 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 
 func (f foreman) Serve() error {
 	for *f.Working {
-		if f.WorkerCounter >= f.Cfg.Concurrent {
+		if *f.WorkerCounter >= f.Cfg.Concurrent {
 			// TODO: change to governer
-			time.Sleep(time.Duration(f.Cfg.RampTime) * time.Second)
+			time.Sleep(time.Duration(f.Cfg.RampTime) * time.Millisecond)
 			continue
 		}
-		f.WorkerCounter++
+		*f.WorkerCounter++
 		go func() {
-			defer func() { f.WorkerCounter-- }()
+			defer func() { *f.WorkerCounter-- }()
 
 			// get a job
 			job, err := f.Store.GetAndLockAvailableJob(f.Cfg.JobDescription)
-			strikeChannel := make(chan bool)
+			strikeChannel := make(chan bool, 1)
 			f.SignalLock.Lock()
 			f.WorkerSignal[job.ID] = strikeChannel
 			f.SignalLock.Unlock()
-			if err != nil && err != CommonError.NOT_FOUND {
+			if err != nil && err != JobError.NOT_FOUND {
 				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
 				return
 			}
@@ -100,7 +102,7 @@ func (f foreman) Serve() error {
 			worker, ok := f.ProductionLine[job.Title]
 			if !ok {
 				job.Status = JobStatus.ERROR
-				job.Message = CommonError.INVALID_PL.Error()
+				job.Message = JobError.INVALID_PL.Error()
 				err = f.Store.UpdateJobResult(job)
 				if err != nil {
 					f.Logger.Error("update job error:" + err.Error())
@@ -110,7 +112,7 @@ func (f foreman) Serve() error {
 			jd, ok := f.Cfg.JobDescription[job.Title]
 			if !ok {
 				job.Status = JobStatus.ERROR
-				job.Message = CommonError.INVALID_JD.Error()
+				job.Message = JobError.INVALID_JD.Error()
 				err = f.Store.UpdateJobResult(job)
 				if err != nil {
 					f.Logger.Error("update job error:" + err.Error())
@@ -165,19 +167,23 @@ func (f foreman) Serve() error {
 				f.Logger.Error("Update job: " + fmt.Sprintf("%v", job))
 			}
 		}()
-		time.Sleep(time.Duration(f.Cfg.RampTime) * time.Second)
+		time.Sleep(time.Duration(f.Cfg.RampTime) * time.Millisecond)
 	}
-	return CommonError.TERMINATING
+	return JobError.TERMINATING
 }
+
 func (f foreman) Strike(ttl int) error {
+	f.Logger.Info("Stopping Foreman")
 	*f.Working = false
+	f.Logger.Info("Waiting for graceful shutdown")
+	time.Sleep(time.Duration(ttl) * time.Second)
+	f.Logger.Warn("Striking remaining job")
 	for k, s := range f.WorkerSignal {
 		f.SignalLock.Lock()
 		s <- true
 		delete(f.WorkerSignal, k)
 		f.SignalLock.Unlock()
 	}
-	time.Sleep(time.Duration(ttl) * time.Second)
 	return nil
 }
 
@@ -186,4 +192,8 @@ func (f foreman) applyMiddlewares(h HandlerFunc, m ...MiddlewareFunc) HandlerFun
 		h = m[i](h)
 	}
 	return h
+}
+
+func (f foreman) GetCounter() int {
+	return *f.WorkerCounter
 }

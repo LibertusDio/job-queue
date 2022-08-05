@@ -6,6 +6,7 @@ import (
 	"time"
 
 	jobqueue "github.com/LibertusDio/job-queue"
+	"github.com/LibertusDio/job-queue/utils"
 	"github.com/google/uuid"
 )
 
@@ -22,18 +23,26 @@ func main() {
 		}},
 		CleanError: false,
 		Concurrent: 10,
-		BreakTime:  1,
-		RampTime:   0,
+		BreakTime:  1000,
+		RampTime:   300,
 	}
-
-	queue := jobqueue.NewForeman(cfg, store{}, logger{})
+	logger := utils.DumpLogger{}
+	queue := jobqueue.NewForeman(cfg, store{}, logger)
 	queue.AddWorker("test", func(ctx context.Context) error {
-		time.Sleep(10 * time.Second)
+		time.Sleep(30 * time.Second)
 		return nil
 	})
-	go func() { fmt.Println(queue.Serve()) }()
+	go func() { logger.Error(fmt.Sprint(queue.Serve())) }()
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			logger.Debug(fmt.Sprintf("Worker Counter: %v\r\n", queue.GetCounter()))
+		}
+	}()
+
 	time.Sleep(5 * time.Second)
-	queue.Strike(20)
+	queue.Strike(5)
+	time.Sleep(5 * time.Second)
 }
 
 type store struct {
@@ -63,26 +72,4 @@ func (s store) UpdateJob(ctx context.Context, job *jobqueue.Job) error {
 }
 func (s store) UpdateJobResult(job *jobqueue.Job) error {
 	return nil
-}
-
-type logger struct {
-}
-
-func (l logger) Debug(msg string) {
-	fmt.Println("[DEBUG] " + msg)
-}
-func (l logger) Info(msg string) {
-	fmt.Println("[INFO] " + msg)
-}
-func (l logger) Warn(msg string) {
-	fmt.Println("[WARN] " + msg)
-}
-func (l logger) Error(msg string) {
-	fmt.Println("[ERROR] " + msg)
-}
-func (l logger) Fatal(msg string) {
-	fmt.Println("[FATAL] " + msg)
-}
-func (l logger) Panic(msg string) {
-	fmt.Println("[PANIC] " + msg)
 }
