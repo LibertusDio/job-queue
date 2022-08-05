@@ -94,6 +94,13 @@ func (f foreman) Serve() error {
 			f.WorkerSignal[job.ID] = strikeChannel
 			f.SignalLock.Unlock()
 			if err != nil && err != JobError.NOT_FOUND {
+				f.Logger.Error("fetch job error:" + err.Error())
+				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
+				return
+			}
+
+			if err == JobError.NOT_FOUND {
+				f.Logger.Info("no job")
 				time.Sleep(time.Duration(f.Cfg.BreakTime) * time.Second)
 				return
 			}
