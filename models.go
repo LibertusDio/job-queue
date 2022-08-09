@@ -22,13 +22,14 @@ type QueueConfig struct {
 // system model
 
 type Job struct {
-	ID       string `mapstructure:"id" yaml:"id" json:"id"`
-	JobID    string `mapstructure:"job_id" yaml:"job_id" json:"job_id"`
-	Title    string `mapstructure:"title" yaml:"title" json:"title"`
-	Payload  string `mapstructure:"payload" yaml:"payload" json:"payload"`
-	Try      int    `mapstructure:"try" yaml:"try" json:"try"`
-	Priority int    `mapstructure:"priority" yaml:"priority" json:"priority"`
-	Status   string `mapstructure:"status" yaml:"status" json:"status"`
-	Result   string `yaml:"result" mapstructure:"result" json:"result"`
-	Message  string `yaml:"message" mapstructure:"message" json:"message"`
+	ID        string `mapstructure:"id" yaml:"id" json:"id"`
+	JobID     string `mapstructure:"job_id" yaml:"job_id" json:"job_id"`
+	Title     string `mapstructure:"title" yaml:"title" json:"title"`
+	Payload   string `mapstructure:"payload" yaml:"payload" json:"payload"`
+	Try       int    `mapstructure:"try" yaml:"try" json:"try"`
+	Priority  int    `mapstructure:"priority" yaml:"priority" json:"priority"`
+	Status    string `mapstructure:"status" yaml:"status" json:"status"`
+	Result    string `yaml:"result" mapstructure:"result" json:"result"`
+	Message   string `yaml:"message" mapstructure:"message" json:"message"`
+	UpdatedAt int64  `yaml:"updated_at" mapstructure:"updated_at" json:"updated_at"`
 }

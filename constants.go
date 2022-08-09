@@ -20,6 +20,16 @@ var JobError = joberror{
 	TERMINATING:    errors.New("terminating"),
 }
 
+type storeerror struct {
+	INVALID_GORM_TX error
+	INVALID_GORM_DB error
+}
+
+var StoreError = storeerror{
+	INVALID_GORM_TX: errors.New("invalid gorm transaction"),
+	INVALID_GORM_DB: errors.New("invalid gorm session"),
+}
+
 type jobstatus struct {
 	INIT       string
 	PROCESSING string
