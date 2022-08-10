@@ -37,10 +37,10 @@ func (g OndemandGovernor) NoJob() {
 }
 
 func (g OndemandGovernor) Spawn() bool {
+	time.Sleep(time.Duration(*g.CurSleep) * time.Millisecond)
 	if *g.WorkerCounter < g.MaxWorker {
 		return true
 	}
-	time.Sleep(time.Duration(*g.CurSleep) * time.Millisecond)
 	g.NoJob()
 	return false
 }
@@ -115,8 +115,15 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 	if job.Priority < 1 {
 		job.Priority = jd.Priority
 	}
+	job.Status = JobStatus.INIT
+	job.Try = 0
+	job.UpdatedAt = time.Now().Unix()
+	err := f.store.CheckDuplicateJob(ctx, job)
+	if err != nil {
+		return err
+	}
 
-	err := f.store.CreateJob(ctx, job)
+	err = f.store.CreateJob(ctx, job)
 	if err != nil {
 		return err
 	}
@@ -211,6 +218,14 @@ func (f foreman) Serve() error {
 				if ctx.Err() == context.Canceled {
 					// job done
 					f.logger.Debug("Complete job: " + fmt.Sprintf("%v", job))
+					if job.Status == JobStatus.RETRY {
+						if job.Try >= jd.MaxRetry {
+							job.Status = JobStatus.MAX_RETRY
+						} else {
+							job.Status = JobStatus.RETRY
+						}
+					}
+
 				}
 
 			}
