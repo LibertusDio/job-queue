@@ -43,12 +43,34 @@ func (s gormstore) CreateJob(ctx context.Context, job *jobqueue.Job) error {
 		return jobqueue.StoreError.INVALID_GORM_TX
 	}
 
-	err := tx.Table(s.contextgormkey).Create(job).Error
+	err := tx.Table(s.tablename).Create(job).Error
 	if err != nil {
 		return err
 	}
 	return nil
 }
+
+func (s gormstore) CheckDuplicateJob(ctx context.Context, job *jobqueue.Job) error {
+	tx, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
+	if !ok {
+		return jobqueue.StoreError.INVALID_GORM_TX
+	}
+
+	var j jobqueue.Job
+	err := tx.Table(s.tablename).
+		Where(" title = ? ", job.Title).
+		Where(" job_id = ? ", job.JobID).
+		Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY, jobqueue.JobStatus.PROCESSING}).
+		First(&j).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return jobqueue.JobError.DUPLICATE_JOB
+}
+
 func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription) (*jobqueue.Job, error) {
 	committed := false
 	tx := s.db.Begin()
@@ -65,7 +87,7 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription)
 	subquery := tx.Table(s.tablename)
 	subquery2 := tx.Table(s.tablename)
 	for k, v := range jd {
-		subquery2 = subquery2.Or("( title = ? AND updated_at <= ? )", k, time.Now().Unix()-int64(v.TTL))
+		subquery2 = subquery2.Or(" title = ? AND updated_at <= ? ", k, time.Now().Unix()-int64(v.TTL))
 	}
 
 	err := tx.Table(s.tablename).
@@ -112,7 +134,7 @@ func (s gormstore) UpdateJobResult(job *jobqueue.Job) error {
 			}
 		}
 	}()
-	err := tx.Table(s.contextgormkey).Save(job).Where(" id = ? ", job.ID).Error
+	err := tx.Table(s.tablename).Save(job).Where(" id = ? ", job.ID).Error
 	if err != nil {
 		return err
 	}

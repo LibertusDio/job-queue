@@ -9,6 +9,7 @@ type joberror struct {
 	INVALID_PL     error
 	NOT_FOUND      error
 	TERMINATING    error
+	DUPLICATE_JOB  error
 }
 
 var JobError = joberror{
@@ -18,6 +19,7 @@ var JobError = joberror{
 	INVALID_PL:     errors.New("invalid production line"),
 	NOT_FOUND:      errors.New("not found"),
 	TERMINATING:    errors.New("terminating"),
+	DUPLICATE_JOB:  errors.New("duplicate job"),
 }
 
 type storeerror struct {

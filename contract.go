@@ -3,6 +3,7 @@ package jobqueue
 import "context"
 
 type JobStorage interface {
+	CheckDuplicateJob(ctx context.Context, job *Job) error
 	CreateJob(ctx context.Context, job *Job) error
 	GetAndLockAvailableJob(jd map[string]JobDescription) (*Job, error)
 	// GetJobByID(ctx context.Context) (*Job, error)
