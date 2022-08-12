@@ -71,7 +71,7 @@ func (s gormstore) CheckDuplicateJob(ctx context.Context, job *jobqueue.Job) err
 	return jobqueue.JobError.DUPLICATE_JOB
 }
 
-func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription) (*jobqueue.Job, error) {
+func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {
 	committed := false
 	tx := s.db.Begin()
 	defer func() {
@@ -84,16 +84,22 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription)
 	}()
 
 	var job jobqueue.Job
-	subquery := tx.Table(s.tablename)
+	subquery1 := tx.Table(s.tablename)
 	subquery2 := tx.Table(s.tablename)
+	subquery3 := tx.Table(s.tablename)
 	for k, v := range jd {
-		subquery2 = subquery2.Or(" title = ? AND updated_at <= ? ", k, time.Now().Unix()-int64(v.TTL))
+		subquery3 = subquery3.Or(" title = ? AND updated_at <= ? ", k, time.Now().Unix()-int64(v.TTL))
 	}
 
-	err := tx.Table(s.tablename).
-		Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY}).
-		Or(subquery.Where(" status = ? ", jobqueue.JobStatus.PROCESSING).
-			Where(subquery2),
+	query := tx.Table(s.tablename)
+	if len(ignorelist) > 0 {
+		query = query.Not("title NOT IN ? ", ignorelist)
+	}
+	err := query.
+		Where(subquery1.Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY}).
+			Or(subquery2.Where(" status = ? ", jobqueue.JobStatus.PROCESSING).
+				Where(subquery3),
+			),
 		).
 		Order("priority ASC").Order("updated_at ASC ").Limit(1).
 		Clauses(clause.Locking{Strength: "UPDATE"}).

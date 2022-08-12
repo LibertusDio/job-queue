@@ -9,46 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-//OndemandGovernor ondemand governor
-type OndemandGovernor struct {
-	MaxSleep      int
-	MinSleep      int
-	CurSleep      *int
-	WorkerCounter *int
-	MaxWorker     int
-}
-
-func (g OndemandGovernor) AddJob() {
-	*g.CurSleep = g.MinSleep
-	*g.WorkerCounter += 1
-}
-
-func (g OndemandGovernor) DelJob() {
-	*g.WorkerCounter -= 1
-}
-
-func (g OndemandGovernor) NoJob() {
-	t := *g.CurSleep
-	t *= 2
-	if t > g.MaxSleep {
-		t = g.MaxSleep
-	}
-	*g.CurSleep = t
-}
-
-func (g OndemandGovernor) Spawn() bool {
-	time.Sleep(time.Duration(*g.CurSleep) * time.Millisecond)
-	if *g.WorkerCounter < g.MaxWorker {
-		return true
-	}
-	g.NoJob()
-	return false
-}
-
-func (g OndemandGovernor) GetCounter() int {
-	return *g.WorkerCounter
-}
-
 type position struct {
 	Func HandlerFunc
 	Midl []MiddlewareFunc
@@ -62,14 +22,12 @@ type foreman struct {
 	signalLock     *sync.Mutex
 	logger         Logger
 	middleware     []MiddlewareFunc
-	governor       governor
+	jobGovernor    governor
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	pl := make(map[string]position)
 	working := true
-	counter := 0
-	t := 1000
 	return &foreman{
 		productionLine: pl,
 		cfg:            config,
@@ -79,13 +37,7 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 		middleware:     make([]MiddlewareFunc, 0),
 		working:        &working,
 		workerSignal:   make(map[string]chan bool),
-		governor: OndemandGovernor{
-			WorkerCounter: &counter,
-			MaxWorker:     config.Concurrent,
-			MaxSleep:      1000,
-			MinSleep:      10,
-			CurSleep:      &t,
-		},
+		jobGovernor:    newOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
 	}
 }
 
@@ -132,11 +84,12 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 
 func (f foreman) Serve() error {
 	for *f.working {
-		if !f.governor.Spawn() {
+		spawn, bl := f.jobGovernor.Spawn()
+		if !spawn {
 			continue
 		}
 		// get a job
-		j, err := f.store.GetAndLockAvailableJob(f.cfg.JobDescription)
+		j, err := f.store.GetAndLockAvailableJob(f.cfg.JobDescription, bl...)
 		strikeChannel := make(chan bool, 1)
 
 		if err != nil && err != JobError.NOT_FOUND {
@@ -146,11 +99,11 @@ func (f foreman) Serve() error {
 
 		if err == JobError.NOT_FOUND {
 			f.logger.Info("no job")
-			f.governor.NoJob()
+			f.jobGovernor.NoJob()
 			continue
 		}
 
-		f.governor.AddJob()
+		f.jobGovernor.AddJob(j.Title)
 
 		go func(job *Job) {
 
@@ -197,7 +150,7 @@ func (f foreman) Serve() error {
 			case <-strikeChannel:
 				f.logger.Error("Strike job: " + job.ID)
 				ctxCancel()
-				f.governor.DelJob()
+				f.jobGovernor.DelJob(job.Title)
 				return
 			case <-ctx.Done():
 				// close(c)
@@ -235,7 +188,7 @@ func (f foreman) Serve() error {
 			if err := f.store.UpdateJobResult(job); err != nil {
 				f.logger.Error("Update job: " + fmt.Sprintf("%v", job))
 			}
-			f.governor.DelJob()
+			f.jobGovernor.DelJob(job.Title)
 		}(j)
 	}
 	return JobError.TERMINATING
@@ -264,5 +217,5 @@ func (f foreman) applyMiddlewares(h HandlerFunc, m ...MiddlewareFunc) HandlerFun
 }
 
 func (f foreman) GetCounter() int {
-	return f.governor.GetCounter()
+	return f.jobGovernor.GetCounter()
 }
