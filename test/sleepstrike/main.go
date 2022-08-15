@@ -51,7 +51,7 @@ type store struct {
 func (s store) CreateJob(ctx context.Context, job *jobqueue.Job) error {
 	return nil
 }
-func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription) (*jobqueue.Job, error) {
+func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {
 	return &jobqueue.Job{
 		ID:       uuid.NewString(),
 		JobID:    uuid.NewString(),

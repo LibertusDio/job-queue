@@ -37,10 +37,10 @@ func main() {
 			"foo": {
 				Title:      "foo",
 				TTL:        20,
-				Concurrent: 10,
+				Concurrent: 1,
 				Priority:   1,
 				MaxRetry:   2,
-				Secure:     false,
+				Secure:     true,
 				Schedule:   false,
 			},
 			"bar": {

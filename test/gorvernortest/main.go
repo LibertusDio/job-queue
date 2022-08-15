@@ -16,7 +16,7 @@ func main() {
 		JobDescription: map[string]jobqueue.JobDescription{"test": {
 			Title:      "test",
 			TTL:        20,
-			Concurrent: 10,
+			Concurrent: 5,
 			Priority:   1,
 			MaxRetry:   2,
 			Secure:     false,
@@ -25,7 +25,7 @@ func main() {
 		CleanError: false,
 		Concurrent: 10,
 		BreakTime:  1000,
-		RampTime:   300,
+		RampTime:   10,
 	}
 	logger := utils.DumpLogger{}
 	queue := jobqueue.NewForeman(cfg, store{}, logger)
@@ -52,8 +52,8 @@ type store struct {
 func (s store) CreateJob(ctx context.Context, job *jobqueue.Job) error {
 	return nil
 }
-func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription) (*jobqueue.Job, error) {
-	if rand.Intn(10) == 0 {
+func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {
+	if rand.Intn(10) == 0 || len(ignorelist) > 0 {
 		return nil, jobqueue.JobError.NOT_FOUND
 	}
 	return &jobqueue.Job{

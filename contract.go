@@ -5,7 +5,7 @@ import "context"
 type JobStorage interface {
 	CheckDuplicateJob(ctx context.Context, job *Job) error
 	CreateJob(ctx context.Context, job *Job) error
-	GetAndLockAvailableJob(jd map[string]JobDescription) (*Job, error)
+	GetAndLockAvailableJob(jd map[string]JobDescription, ignorelist ...string) (*Job, error)
 	// GetJobByID(ctx context.Context) (*Job, error)
 	// UpdateJob(ctx context.Context, job *Job) error
 	UpdateJobResult(job *Job) error
@@ -44,9 +44,9 @@ type Logger interface {
 }
 
 type governor interface {
-	AddJob()
-	DelJob()
+	AddJob(string)
+	DelJob(string)
 	NoJob()
-	Spawn() bool
+	Spawn() (bool, []string)
 	GetCounter() int
 }
