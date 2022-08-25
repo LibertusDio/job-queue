@@ -51,3 +51,5 @@ var JobStatus = jobstatus{
 }
 
 const ContextJobKey = "job"
+
+const MaxTime int64 = 9223372036854775807

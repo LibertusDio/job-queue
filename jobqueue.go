@@ -22,7 +22,7 @@ type foreman struct {
 	signalLock     *sync.Mutex
 	logger         Logger
 	middleware     []MiddlewareFunc
-	jobGovernor    governor
+	jobGovernor    Governor
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
@@ -37,7 +37,7 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 		middleware:     make([]MiddlewareFunc, 0),
 		working:        &working,
 		workerSignal:   make(map[string]chan bool),
-		jobGovernor:    newOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
+		jobGovernor:    NewLocalOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
 	}
 }
 
@@ -70,12 +70,52 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 	job.Status = JobStatus.INIT
 	job.Try = 0
 	job.UpdatedAt = time.Now().Unix()
-	err := f.store.CheckDuplicateJob(ctx, job)
+	err := f.store.CheckDuplicateJob(ctx, *job)
 	if err != nil {
 		return err
 	}
 
-	err = f.store.CreateJob(ctx, job)
+	err = f.store.CreateJob(ctx, *job)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64) error {
+	jd, ok := f.cfg.JobDescription[job.Title]
+	if !ok {
+		return JobError.INVALID_JOB
+	}
+
+	if job.ID == "" {
+		job.ID = uuid.NewString()
+	}
+
+	if job.Priority < 1 {
+		job.Priority = jd.Priority
+	}
+	job.Status = JobStatus.INIT
+	job.Try = 0
+	job.UpdatedAt = time.Now().Unix()
+	err := f.store.CheckDuplicateJob(ctx, *job)
+	if err != nil {
+		return err
+	}
+
+	sj := ScheduleJob{
+		ID:        job.ID,
+		JobID:     job.JobID,
+		Title:     job.Title,
+		Payload:   job.Payload,
+		Priority:  job.Priority,
+		Status:    job.Status,
+		UpdatedAt: job.UpdatedAt,
+		Schedule:  runat,
+		ExecuteID: "",
+	}
+
+	err = f.store.CreateScheduleJob(ctx, sj)
 	if err != nil {
 		return err
 	}
@@ -83,6 +123,49 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 }
 
 func (f foreman) Serve() error {
+	// scheduler
+	go func() {
+		for *f.working {
+			time.Sleep(59 * time.Second)
+			jobs, err := f.store.GetScheduledJob(0, time.Now().Unix())
+			if err == JobError.NOT_FOUND {
+				f.logger.Info("empty schedule")
+				continue
+			}
+			if err != nil {
+				f.logger.Error("fetching schedule error: " + err.Error())
+				continue
+			}
+			for _, job := range jobs {
+				id := uuid.NewString()
+				now := time.Now().Unix()
+				j := Job{
+					ID:        id,
+					JobID:     job.JobID,
+					Title:     job.Title,
+					Payload:   job.Payload,
+					Priority:  job.Priority,
+					Status:    JobStatus.INIT,
+					UpdatedAt: now,
+				}
+				err := f.store.InjectJob(j)
+				if err != nil {
+					job.Status = JobStatus.ERROR
+					job.Log = err.Error()
+					job.UpdatedAt = now
+				} else {
+					job.Status = JobStatus.DONE
+					job.ExecuteID = id
+					job.UpdatedAt = now
+				}
+				err = f.store.UpdateScheduledJob(*job)
+				if err != nil {
+					f.logger.Error("update schdule job error: " + err.Error())
+				}
+			}
+		}
+	}()
+
 	for *f.working {
 		spawn, bl := f.jobGovernor.Spawn()
 		if !spawn {
@@ -106,7 +189,6 @@ func (f foreman) Serve() error {
 		f.jobGovernor.AddJob(j.Title)
 
 		go func(job *Job) {
-
 			f.signalLock.Lock()
 			f.workerSignal[j.ID] = strikeChannel
 			f.signalLock.Unlock()
@@ -116,7 +198,7 @@ func (f foreman) Serve() error {
 			if !ok {
 				job.Status = JobStatus.ERROR
 				job.Message = JobError.INVALID_PL.Error()
-				err = f.store.UpdateJobResult(job)
+				err = f.store.UpdateJobResult(*job)
 				if err != nil {
 					f.logger.Error("update job error:" + err.Error())
 				}
@@ -126,7 +208,7 @@ func (f foreman) Serve() error {
 			if !ok {
 				job.Status = JobStatus.ERROR
 				job.Message = JobError.INVALID_JD.Error()
-				err = f.store.UpdateJobResult(job)
+				err = f.store.UpdateJobResult(*job)
 				if err != nil {
 					f.logger.Error("update job error:" + err.Error())
 				}
@@ -185,7 +267,7 @@ func (f foreman) Serve() error {
 			// update job status
 			job.Try += 1
 			job.Priority *= 2
-			if err := f.store.UpdateJobResult(job); err != nil {
+			if err := f.store.UpdateJobResult(*job); err != nil {
 				f.logger.Error("Update job: " + fmt.Sprintf("%v", job))
 			}
 			f.jobGovernor.DelJob(job.Title)

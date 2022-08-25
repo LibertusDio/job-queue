@@ -8,7 +8,6 @@ type JobDescription struct {
 	Priority   int    `mapstructure:"priority" yaml:"priority" json:"priority"`       // 0 is invalid here, 1 is highest
 	MaxRetry   int    `mapstructure:"max_retry" yaml:"max_retry" json:"max_retry"`    // number of retry
 	Secure     bool   `mapstructure:"secure" yaml:"secure" json:"secure"`
-	Schedule   bool   `mapstructure:"schedule" yaml:"schedule" json:"schedule"`
 }
 
 type QueueConfig struct {
@@ -32,4 +31,17 @@ type Job struct {
 	Result    string `yaml:"result" mapstructure:"result" json:"result"`
 	Message   string `yaml:"message" mapstructure:"message" json:"message"`
 	UpdatedAt int64  `yaml:"updated_at" mapstructure:"updated_at" json:"updated_at"`
+}
+
+type ScheduleJob struct {
+	ID        string `mapstructure:"id" yaml:"id" json:"id"`
+	JobID     string `mapstructure:"job_id" yaml:"job_id" json:"job_id"`
+	Title     string `mapstructure:"title" yaml:"title" json:"title"`
+	Payload   string `mapstructure:"payload" yaml:"payload" json:"payload"`
+	Priority  int    `mapstructure:"priority" yaml:"priority" json:"priority"`
+	Status    string `mapstructure:"status" yaml:"status" json:"status"`
+	UpdatedAt int64  `yaml:"updated_at" mapstructure:"updated_at" json:"updated_at"`
+	Schedule  int64  `json:"schedule"`
+	ExecuteID string `json:"execute_id"`
+	Log       string `json:"log"`
 }
