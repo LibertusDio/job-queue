@@ -27,7 +27,7 @@ func main() {
 
 	gormDB = gormDB.Debug()
 
-	store, err := gormstore.NewGormStore("jobs", "db", gormDB, logger)
+	store, err := gormstore.NewGormStore("jobs", "schedule_jobs", "db", gormDB, logger)
 	if err != nil {
 		logger.Error(err.Error())
 	}
@@ -41,7 +41,6 @@ func main() {
 				Priority:   1,
 				MaxRetry:   2,
 				Secure:     true,
-				Schedule:   false,
 			},
 			"bar": {
 				Title:      "bar",
@@ -50,7 +49,6 @@ func main() {
 				Priority:   1,
 				MaxRetry:   2,
 				Secure:     false,
-				Schedule:   false,
 			},
 		},
 		CleanError: false,
