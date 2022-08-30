@@ -19,7 +19,6 @@ func main() {
 			Priority:   1,
 			MaxRetry:   2,
 			Secure:     false,
-			Schedule:   false,
 		}},
 		CleanError: false,
 		Concurrent: 10,
@@ -48,7 +47,7 @@ func main() {
 type store struct {
 }
 
-func (s store) CreateJob(ctx context.Context, job *jobqueue.Job) error {
+func (s store) CreateJob(ctx context.Context, job jobqueue.Job) error {
 	return nil
 }
 func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {
@@ -67,12 +66,24 @@ func (s store) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ign
 func (s store) GetJobByID(ctx context.Context) (*jobqueue.Job, error) {
 	return nil, nil
 }
-func (s store) UpdateJob(ctx context.Context, job *jobqueue.Job) error {
+func (s store) UpdateJob(ctx context.Context, job jobqueue.Job) error {
 	return nil
 }
-func (s store) UpdateJobResult(job *jobqueue.Job) error {
+func (s store) UpdateJobResult(job jobqueue.Job) error {
 	return nil
 }
-func (s store) CheckDuplicateJob(ctx context.Context, job *jobqueue.Job) error {
+func (s store) CheckDuplicateJob(ctx context.Context, job jobqueue.Job) error {
+	return nil
+}
+func (s store) InjectJob(job jobqueue.Job) error {
+	return nil
+}
+func (s store) CreateScheduleJob(ctx context.Context, job jobqueue.ScheduleJob) error {
+	return nil
+}
+func (s store) GetScheduledJob(from, to int64) ([]*jobqueue.ScheduleJob, error) {
+	return nil, jobqueue.JobError.NOT_FOUND
+}
+func (s store) UpdateScheduledJob(job jobqueue.ScheduleJob) error {
 	return nil
 }

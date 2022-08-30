@@ -3,12 +3,15 @@ package jobqueue
 import "context"
 
 type JobStorage interface {
-	CheckDuplicateJob(ctx context.Context, job *Job) error
-	CreateJob(ctx context.Context, job *Job) error
+	CheckDuplicateJob(ctx context.Context, job Job) error
+	CreateJob(ctx context.Context, job Job) error
 	GetAndLockAvailableJob(jd map[string]JobDescription, ignorelist ...string) (*Job, error)
-	// GetJobByID(ctx context.Context) (*Job, error)
-	// UpdateJob(ctx context.Context, job *Job) error
-	UpdateJobResult(job *Job) error
+	UpdateJobResult(job Job) error
+
+	InjectJob(Job) error
+	CreateScheduleJob(ctx context.Context, job ScheduleJob) error
+	GetScheduledJob(from, to int64) ([]*ScheduleJob, error)
+	UpdateScheduledJob(ScheduleJob) error
 }
 
 type MiddlewareFunc func(HandlerFunc) HandlerFunc
@@ -20,6 +23,9 @@ type Foreman interface {
 
 	//AddJob add a new job to the queue
 	AddJob(ctx context.Context, job *Job) error
+
+	//AddJobWithSchedule add a new job to the queue to run at a schedule
+	AddJobWithSchedule(ctx context.Context, job *Job, runat int64) error
 
 	//Serve start the worker service
 	Serve() error
@@ -43,7 +49,7 @@ type Logger interface {
 	Panic(msg string)
 }
 
-type governor interface {
+type Governor interface {
 	AddJob(string)
 	DelJob(string)
 	NoJob()

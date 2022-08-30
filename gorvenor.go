@@ -6,13 +6,13 @@ import (
 )
 
 //OndemandGovernor ondemand governor
-func newOndemandGovernor(max, min, maxworker int, jd map[string]JobDescription) governor {
+func NewLocalOndemandGovernor(max, min, maxworker int, jd map[string]JobDescription) Governor {
 	curr := max
 	jc := make(map[string]*int)
 	for k := range jd {
 		jc[k] = new(int)
 	}
-	return &OndemandGovernor{
+	return &LocalOndemandGovernor{
 		WorkerCounter:  new(int),
 		MaxWorker:      maxworker,
 		MaxSleep:       max,
@@ -25,7 +25,7 @@ func newOndemandGovernor(max, min, maxworker int, jd map[string]JobDescription) 
 
 }
 
-type OndemandGovernor struct {
+type LocalOndemandGovernor struct {
 	MaxSleep       int
 	MinSleep       int
 	CurSleep       *int
@@ -36,7 +36,7 @@ type OndemandGovernor struct {
 	JobDescription map[string]JobDescription
 }
 
-func (g OndemandGovernor) AddJob(title string) {
+func (g LocalOndemandGovernor) AddJob(title string) {
 	g.Locker.Lock()
 	defer g.Locker.Unlock()
 	*g.CurSleep = g.MinSleep
@@ -44,14 +44,14 @@ func (g OndemandGovernor) AddJob(title string) {
 	*g.WorkerCounter += 1
 }
 
-func (g OndemandGovernor) DelJob(title string) {
+func (g LocalOndemandGovernor) DelJob(title string) {
 	g.Locker.Lock()
 	defer g.Locker.Unlock()
 	*g.JobCounter[title] -= 1
 	*g.WorkerCounter -= 1
 }
 
-func (g OndemandGovernor) NoJob() {
+func (g LocalOndemandGovernor) NoJob() {
 	t := *g.CurSleep
 	t *= 2
 	if t > g.MaxSleep {
@@ -60,7 +60,7 @@ func (g OndemandGovernor) NoJob() {
 	*g.CurSleep = t
 }
 
-func (g OndemandGovernor) Spawn() (bool, []string) {
+func (g LocalOndemandGovernor) Spawn() (bool, []string) {
 	bl := make([]string, 0)
 	for k, v := range g.JobDescription {
 		if v.Secure {
@@ -83,6 +83,6 @@ func (g OndemandGovernor) Spawn() (bool, []string) {
 	return false, bl
 }
 
-func (g OndemandGovernor) GetCounter() int {
+func (g LocalOndemandGovernor) GetCounter() int {
 	return *g.WorkerCounter
 }
