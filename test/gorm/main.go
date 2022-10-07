@@ -62,7 +62,6 @@ func main() {
 				Priority:   1,
 				MaxRetry:   5,
 				Secure:     false,
-				Schedule:   false,
 			},
 		},
 		CleanError: false,
