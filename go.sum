@@ -1,3 +1,5 @@
+github.com/LibertusDio/union-go v0.0.0-20221005065051-d3745fee291e h1:a6UeuEyZrJPiOU2Ft0sh+gzKknwhIV3/8Z9G1C2JzTw=
+github.com/LibertusDio/union-go v0.0.0-20221005065051-d3745fee291e/go.mod h1:RVn2aU3wyGvnWKr90XK/3GASGKS8hGMrovevhrZ2ttQ=
 github.com/go-sql-driver/mysql v1.6.0 h1:BCTh4TKNUYmOmMUcQ3IipzF5prigylS7XXjEkfCHuOE=
 github.com/go-sql-driver/mysql v1.6.0/go.mod h1:DCzpHaOWr8IXmIStZouvnhqoel9Qv2LBy8hT2VhHyBg=
 github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=

@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func main() {
@@ -19,13 +20,15 @@ func main() {
 
 	gormDB, err := gorm.Open(
 		mysql.Open("root:mysql@tcp(127.0.0.1:3306)/jobs?charset=utf8mb4&parseTime=True&loc=Local"),
-		&gorm.Config{},
+		&gorm.Config{
+			Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+		},
 	)
 	if err != nil {
 		logger.Error(err.Error())
 	}
 
-	gormDB = gormDB.Debug()
+	// gormDB = gormDB.Debug()
 
 	store, err := gormstore.NewGormStore("jobs", "schedule_jobs", "db", gormDB, logger)
 	if err != nil {

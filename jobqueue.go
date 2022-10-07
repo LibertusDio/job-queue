@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	union "github.com/LibertusDio/union-go"
 	"github.com/google/uuid"
 )
 
@@ -23,6 +24,7 @@ type foreman struct {
 	logger         Logger
 	middleware     []MiddlewareFunc
 	jobGovernor    Governor
+	union          union.Union
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
@@ -38,6 +40,7 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 		working:        &working,
 		workerSignal:   make(map[string]chan bool),
 		jobGovernor:    NewLocalOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
+		union:          union.NewGoroutineUnion(),
 	}
 }
 
@@ -185,10 +188,13 @@ func (f foreman) Serve() error {
 			f.jobGovernor.NoJob()
 			continue
 		}
-
 		f.jobGovernor.AddJob(j.Title)
+		workerdata := union.WorkerData{
+			InputData: j,
+		}
 
-		go func(job *Job) {
+		f.union.Execute(func(data union.WorkerData) {
+			job := data.InputData.(*Job)
 			f.signalLock.Lock()
 			f.workerSignal[j.ID] = strikeChannel
 			f.signalLock.Unlock()
@@ -271,7 +277,7 @@ func (f foreman) Serve() error {
 				f.logger.Error("Update job: " + fmt.Sprintf("%v", job))
 			}
 			f.jobGovernor.DelJob(job.Title)
-		}(j)
+		}, workerdata)
 	}
 	return JobError.TERMINATING
 }
