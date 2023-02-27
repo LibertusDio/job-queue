@@ -36,7 +36,7 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 		store:          store,
 		logger:         logger,
 		signalLock:     new(sync.Mutex),
-		middleware:     make([]MiddlewareFunc, 0),
+		middleware:     []MiddlewareFunc{},
 		working:        &working,
 		workerSignal:   make(map[string]chan bool),
 		jobGovernor:    NewLocalOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
@@ -44,11 +44,11 @@ func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	}
 }
 
-func (f foreman) AddMiddleware(midl ...MiddlewareFunc) {
+func (f *foreman) AddMiddleware(midl ...MiddlewareFunc) {
 	f.middleware = append(f.middleware, midl...)
 }
 
-func (f foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...MiddlewareFunc) error {
+func (f *foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...MiddlewareFunc) error {
 	_, ok := f.cfg.JobDescription[title]
 	if !ok {
 		return JobError.INVALID_JD
@@ -57,7 +57,7 @@ func (f foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...Middlew
 	f.productionLine[title] = position{Func: workerfunc, Midl: midl}
 	return nil
 }
-func (f foreman) AddJob(ctx context.Context, job *Job) error {
+func (f *foreman) AddJobTransaction(ctx context.Context, job *Job) error {
 	jd, ok := f.cfg.JobDescription[job.Title]
 	if !ok {
 		return JobError.INVALID_JOB
@@ -73,7 +73,7 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 	job.Status = JobStatus.INIT
 	job.Try = 0
 	job.UpdatedAt = time.Now().Unix()
-	err := f.store.CheckDuplicateJob(ctx, *job)
+	err := f.store.CheckDuplicateJob(*job)
 	if err != nil {
 		return err
 	}
@@ -84,8 +84,7 @@ func (f foreman) AddJob(ctx context.Context, job *Job) error {
 	}
 	return nil
 }
-
-func (f foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64) error {
+func (f *foreman) AddJob(job *Job) error {
 	jd, ok := f.cfg.JobDescription[job.Title]
 	if !ok {
 		return JobError.INVALID_JOB
@@ -101,7 +100,35 @@ func (f foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64) 
 	job.Status = JobStatus.INIT
 	job.Try = 0
 	job.UpdatedAt = time.Now().Unix()
-	err := f.store.CheckDuplicateJob(ctx, *job)
+	err := f.store.CheckDuplicateJob(*job)
+	if err != nil {
+		return err
+	}
+
+	err = f.store.InjectJob(*job)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64) error {
+	jd, ok := f.cfg.JobDescription[job.Title]
+	if !ok {
+		return JobError.INVALID_JOB
+	}
+
+	if job.ID == "" {
+		job.ID = uuid.NewString()
+	}
+
+	if job.Priority < 1 {
+		job.Priority = jd.Priority
+	}
+	job.Status = JobStatus.INIT
+	job.Try = 0
+	job.UpdatedAt = time.Now().Unix()
+	err := f.store.CheckDuplicateJob(*job)
 	if err != nil {
 		return err
 	}
@@ -125,7 +152,7 @@ func (f foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64) 
 	return nil
 }
 
-func (f foreman) Serve() error {
+func (f *foreman) Serve() error {
 	// scheduler
 	go func() {
 		for *f.working {
@@ -228,7 +255,7 @@ func (f foreman) Serve() error {
 				defer ctxCancel()
 				f.logger.Debug("Start job: " + job.ID)
 				ctx = context.WithValue(ctx, ContextJobKey, job)
-				if err := f.applyMiddlewares(f.applyMiddlewares(worker.Func, f.middleware...), worker.Midl...)(ctx); err != nil {
+				if err := f.applyMiddlewares(f.applyMiddlewares(worker.Func, worker.Midl...), f.middleware...)(ctx); err != nil {
 					job.Result = err.Error()
 					job.Status = JobStatus.ERROR
 				}
@@ -282,7 +309,7 @@ func (f foreman) Serve() error {
 	return JobError.TERMINATING
 }
 
-func (f foreman) Strike(ttl int) error {
+func (f *foreman) Strike(ttl int) error {
 	f.logger.Info("Stopping Foreman")
 	*f.working = false
 	f.logger.Info("Waiting for graceful shutdown")
@@ -297,13 +324,13 @@ func (f foreman) Strike(ttl int) error {
 	return nil
 }
 
-func (f foreman) applyMiddlewares(h HandlerFunc, m ...MiddlewareFunc) HandlerFunc {
+func (f *foreman) applyMiddlewares(h HandlerFunc, m ...MiddlewareFunc) HandlerFunc {
 	for i := len(m) - 1; i >= 0; i-- {
 		h = m[i](h)
 	}
 	return h
 }
 
-func (f foreman) GetCounter() int {
+func (f *foreman) GetCounter() int {
 	return f.jobGovernor.GetCounter()
 }

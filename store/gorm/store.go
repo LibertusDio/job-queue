@@ -57,11 +57,17 @@ func (s gormstore) CreateJob(ctx context.Context, job jobqueue.Job) error {
 	return nil
 }
 
-func (s gormstore) CheckDuplicateJob(ctx context.Context, job jobqueue.Job) error {
-	tx, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
-	if !ok {
-		return jobqueue.StoreError.INVALID_GORM_TX
-	}
+func (s gormstore) CheckDuplicateJob(job jobqueue.Job) error {
+	committed := false
+	tx := s.db.Begin()
+	defer func() {
+		if !committed {
+			e := tx.Rollback().Error
+			if e != nil && s.logger != nil {
+				s.logger.Error("[InjectJob] rollback error job: " + job.ID)
+			}
+		}
+	}()
 
 	var j jobqueue.Job
 	err := tx.Table(s.jobtablename).
@@ -69,13 +75,20 @@ func (s gormstore) CheckDuplicateJob(ctx context.Context, job jobqueue.Job) erro
 		Where(" job_id = ? ", job.JobID).
 		Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY, jobqueue.JobStatus.PROCESSING}).
 		First(&j).Error
-	if err == gorm.ErrRecordNotFound {
-		return nil
-	}
-	if err != nil {
+
+	if err != nil && err != gorm.ErrRecordNotFound {
 		return err
 	}
-	return jobqueue.JobError.DUPLICATE_JOB
+	if err == nil {
+		return jobqueue.JobError.DUPLICATE_JOB
+	}
+
+	err = tx.Commit().Error
+	if err != nil && s.logger != nil {
+		s.logger.Error("[InjectJob] commit error job: " + job.ID)
+	}
+	committed = true
+	return nil
 }
 
 func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {

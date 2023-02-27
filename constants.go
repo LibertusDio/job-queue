@@ -50,6 +50,7 @@ var JobStatus = jobstatus{
 	DONE:       "done",
 }
 
-const ContextJobKey = "job"
+const ContextJobKey = "job-key"
+const ContextQueueKey = "queue-key"
 
 const MaxTime int64 = 9223372036854775807

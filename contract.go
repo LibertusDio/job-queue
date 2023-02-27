@@ -3,7 +3,7 @@ package jobqueue
 import "context"
 
 type JobStorage interface {
-	CheckDuplicateJob(ctx context.Context, job Job) error
+	CheckDuplicateJob(job Job) error
 	CreateJob(ctx context.Context, job Job) error
 	GetAndLockAvailableJob(jd map[string]JobDescription, ignorelist ...string) (*Job, error)
 	UpdateJobResult(job Job) error
@@ -21,8 +21,11 @@ type Foreman interface {
 	//AddWorker add a worker function for handler
 	AddWorker(title string, worker HandlerFunc, midl ...MiddlewareFunc) error
 
-	//AddJob add a new job to the queue
-	AddJob(ctx context.Context, job *Job) error
+	//AddJobTransaction add a new job to the queue
+	AddJobTransaction(ctx context.Context, job *Job) error
+
+	//AddJob add a new job to the queue without context, dont recommend but handy for multiple context
+	AddJob(job *Job) error
 
 	//AddJobWithSchedule add a new job to the queue to run at a schedule
 	AddJobWithSchedule(ctx context.Context, job *Job, runat int64) error
