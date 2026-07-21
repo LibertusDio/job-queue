@@ -44,6 +44,13 @@ func NewGormStore(jobtablename, schedulejobtablename string, contextgormkey stri
 	}, nil
 }
 
+// supportsRowLocking reports whether the underlying dialect understands
+// `SELECT ... FOR UPDATE`. SQLite has no such clause (it serializes writers
+// at the transaction level instead), so issuing it there is a SQL syntax error.
+func (s gormstore) supportsRowLocking() bool {
+	return s.db.Name() != "sqlite"
+}
+
 func (s gormstore) CreateJob(ctx context.Context, job jobqueue.Job) error {
 	tx, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
 	if !ok {
@@ -115,15 +122,17 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription,
 	if len(ignorelist) > 0 {
 		query = query.Where("title NOT IN ? ", ignorelist)
 	}
-	err := query.
+	query = query.
 		Where(subquery1.Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY}).
 			Or(subquery2.Where(" status = ? ", jobqueue.JobStatus.PROCESSING).
 				Where(subquery3),
 			),
 		).
-		Order("priority ASC").Order("updated_at ASC ").Limit(1).
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		First(&job).Error
+		Order("priority ASC").Order("updated_at ASC ").Limit(1)
+	if s.supportsRowLocking() {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.First(&job).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
@@ -222,14 +231,15 @@ func (s gormstore) GetScheduledJob(from, to int64) ([]*jobqueue.ScheduleJob, err
 		}
 	}()
 	var jobs []*jobqueue.ScheduleJob
-	err := tx.Table(s.schedulejobtablename).
+	q := tx.Table(s.schedulejobtablename).
 		Where("schedule >= ? AND schedule <= ? ", from, to).
 		Where(" (status = ? OR ( status = ? AND updated_at <= ? ))", jobqueue.JobStatus.INIT, jobqueue.JobStatus.PROCESSING, time.Now().Unix()-300).
 		Order("priority ASC").
-		Order("schedule ASC").
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Find(&jobs).
-		Error
+		Order("schedule ASC")
+	if s.supportsRowLocking() {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := q.Find(&jobs).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, jobqueue.JobError.NOT_FOUND
 	}
