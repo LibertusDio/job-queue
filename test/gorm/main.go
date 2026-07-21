@@ -26,6 +26,7 @@ func main() {
 	)
 	if err != nil {
 		logger.Error(err.Error())
+		return
 	}
 
 	// gormDB = gormDB.Debug()
@@ -33,6 +34,7 @@ func main() {
 	store, err := gormstore.NewGormStore("jobs", "schedule_jobs", "db", gormDB, logger)
 	if err != nil {
 		logger.Error(err.Error())
+		return
 	}
 
 	queuecfg := &jobqueue.QueueConfig{
@@ -94,7 +96,7 @@ func main() {
 	}()
 	time.Sleep(5 * time.Second)
 
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "foo",
 		JobID: "1",
 	})
@@ -102,35 +104,35 @@ func main() {
 		logger.Error("Add job: " + err.Error())
 	}
 
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "foo",
 		JobID: "1",
 	})
 	if err != nil {
 		logger.Error("Add job: " + err.Error())
 	}
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "foo",
 		JobID: "2",
 	})
 	if err != nil {
 		logger.Error("Add job: " + err.Error())
 	}
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "bar",
 		JobID: "1",
 	})
 	if err != nil {
 		logger.Error("Add job: " + err.Error())
 	}
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "bar",
 		JobID: "2",
 	})
 	if err != nil {
 		logger.Error("Add job: " + err.Error())
 	}
-	err = queue.AddJob(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
+	err = queue.AddJobTransaction(context.WithValue(context.Background(), "db", gormDB), &jobqueue.Job{
 		Title: "foo",
 		JobID: "3",
 	})

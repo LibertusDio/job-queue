@@ -52,6 +52,8 @@ func (g LocalOndemandGovernor) DelJob(title string) {
 }
 
 func (g LocalOndemandGovernor) NoJob() {
+	g.Locker.Lock()
+	defer g.Locker.Unlock()
 	t := *g.CurSleep
 	t *= 2
 	if t > g.MaxSleep {
@@ -62,21 +64,21 @@ func (g LocalOndemandGovernor) NoJob() {
 
 func (g LocalOndemandGovernor) Spawn() (bool, []string) {
 	bl := make([]string, 0)
+	g.Locker.Lock()
 	for k, v := range g.JobDescription {
-		if v.Secure {
-			g.Locker.Lock()
-			if *g.JobCounter[k] >= v.Concurrent {
-				bl = append(bl, k)
-			}
-			g.Locker.Unlock()
-		} else {
-			if *g.JobCounter[k] >= v.Concurrent {
-				bl = append(bl, k)
-			}
+		if *g.JobCounter[k] >= v.Concurrent {
+			bl = append(bl, k)
 		}
 	}
-	time.Sleep(time.Duration(*g.CurSleep) * time.Millisecond)
-	if *g.WorkerCounter < g.MaxWorker {
+	sleep := *g.CurSleep
+	g.Locker.Unlock()
+
+	time.Sleep(time.Duration(sleep) * time.Millisecond)
+
+	g.Locker.Lock()
+	spawn := *g.WorkerCounter < g.MaxWorker
+	g.Locker.Unlock()
+	if spawn {
 		return true, bl
 	}
 	g.NoJob()
