@@ -25,11 +25,13 @@ var JobError = joberror{
 type storeerror struct {
 	INVALID_GORM_TX error
 	INVALID_GORM_DB error
+	LOCK_TIMEOUT    error
 }
 
 var StoreError = storeerror{
 	INVALID_GORM_TX: errors.New("invalid gorm transaction"),
 	INVALID_GORM_DB: errors.New("invalid gorm session"),
+	LOCK_TIMEOUT:    errors.New("timed out waiting for job lock"),
 }
 
 type jobstatus struct {

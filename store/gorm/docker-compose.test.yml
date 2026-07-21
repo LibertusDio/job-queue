@@ -1,0 +1,32 @@
+name: jobqueue-store-test
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: jobqueue
+      MYSQL_DATABASE: jobqueue
+    # Durability fsyncs are pointlessly slow under Docker Desktop's virtualized
+    # disk I/O on Windows (~400ms/commit observed) and irrelevant for disposable
+    # test data, so both are relaxed here purely for test-suite speed.
+    command: --innodb-flush-log-at-trx-commit=0 --sync-binlog=0
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pjobqueue"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: jobqueue
+      POSTGRES_DB: jobqueue
+    ports:
+      - "5544:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
