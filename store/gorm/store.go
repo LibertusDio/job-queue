@@ -113,7 +113,7 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription,
 
 	query := tx.Table(s.jobtablename)
 	if len(ignorelist) > 0 {
-		query = query.Not("title NOT IN ? ", ignorelist)
+		query = query.Where("title NOT IN ? ", ignorelist)
 	}
 	err := query.
 		Where(subquery1.Where(" status IN ? ", []string{jobqueue.JobStatus.INIT, jobqueue.JobStatus.RETRY}).

@@ -76,7 +76,7 @@ func (s store) UpdateJob(ctx context.Context, job jobqueue.Job) error {
 func (s store) UpdateJobResult(job jobqueue.Job) error {
 	return nil
 }
-func (s store) CheckDuplicateJob(ctx context.Context, job jobqueue.Job) error {
+func (s store) CheckDuplicateJob(job jobqueue.Job) error {
 	return nil
 }
 func (s store) InjectJob(job jobqueue.Job) error {

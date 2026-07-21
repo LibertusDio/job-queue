@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	union "github.com/LibertusDio/union-go"
@@ -19,7 +20,7 @@ type foreman struct {
 	cfg            *QueueConfig
 	store          JobStorage
 	workerSignal   map[string]chan bool
-	working        *bool
+	working        atomic.Bool
 	signalLock     *sync.Mutex
 	logger         Logger
 	middleware     []MiddlewareFunc
@@ -29,19 +30,19 @@ type foreman struct {
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
 	pl := make(map[string]position)
-	working := true
-	return &foreman{
+	f := &foreman{
 		productionLine: pl,
 		cfg:            config,
 		store:          store,
 		logger:         logger,
 		signalLock:     new(sync.Mutex),
 		middleware:     []MiddlewareFunc{},
-		working:        &working,
 		workerSignal:   make(map[string]chan bool),
 		jobGovernor:    NewLocalOndemandGovernor(config.BreakTime, config.RampTime, config.Concurrent, config.JobDescription),
 		union:          union.NewGoroutineUnion(),
 	}
+	f.working.Store(true)
+	return f
 }
 
 func (f *foreman) AddMiddleware(midl ...MiddlewareFunc) {
@@ -155,7 +156,7 @@ func (f *foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64)
 func (f *foreman) Serve() error {
 	// scheduler
 	go func() {
-		for *f.working {
+		for f.working.Load() {
 			time.Sleep(59 * time.Second)
 			jobs, err := f.store.GetScheduledJob(0, time.Now().Unix())
 			if err == JobError.NOT_FOUND {
@@ -196,7 +197,7 @@ func (f *foreman) Serve() error {
 		}
 	}()
 
-	for *f.working {
+	for f.working.Load() {
 		spawn, bl := f.jobGovernor.Spawn()
 		if !spawn {
 			continue
@@ -235,6 +236,11 @@ func (f *foreman) Serve() error {
 				if err != nil {
 					f.logger.Error("update job error:" + err.Error())
 				}
+				f.jobGovernor.DelJob(job.Title)
+				f.signalLock.Lock()
+				delete(f.workerSignal, job.ID)
+				f.signalLock.Unlock()
+				return
 			}
 
 			jd, ok := f.cfg.JobDescription[job.Title]
@@ -245,6 +251,11 @@ func (f *foreman) Serve() error {
 				if err != nil {
 					f.logger.Error("update job error:" + err.Error())
 				}
+				f.jobGovernor.DelJob(job.Title)
+				f.signalLock.Lock()
+				delete(f.workerSignal, job.ID)
+				f.signalLock.Unlock()
+				return
 			}
 
 			// run job
@@ -253,6 +264,13 @@ func (f *foreman) Serve() error {
 			// start worker
 			go func(ctx context.Context, worker position) {
 				defer ctxCancel()
+				defer func() {
+					if r := recover(); r != nil {
+						job.Status = JobStatus.ERROR
+						job.Result = fmt.Sprintf("panic: %v", r)
+						f.logger.Error("panic in job: " + job.ID + ": " + fmt.Sprintf("%v", r))
+					}
+				}()
 				f.logger.Debug("Start job: " + job.ID)
 				ctx = context.WithValue(ctx, ContextJobKey, job)
 				if err := f.applyMiddlewares(f.applyMiddlewares(worker.Func, worker.Midl...), f.middleware...)(ctx); err != nil {
@@ -272,7 +290,6 @@ func (f *foreman) Serve() error {
 				f.signalLock.Lock()
 				delete(f.workerSignal, job.ID)
 				f.signalLock.Unlock()
-				close(strikeChannel)
 				if ctx.Err() == context.DeadlineExceeded {
 					// timeout
 					f.logger.Warn("Terminate job: " + job.ID)
@@ -311,15 +328,16 @@ func (f *foreman) Serve() error {
 
 func (f *foreman) Strike(ttl int) error {
 	f.logger.Info("Stopping Foreman")
-	*f.working = false
+	f.working.Store(false)
 	f.logger.Info("Waiting for graceful shutdown")
 	time.Sleep(time.Duration(ttl) * time.Second)
 	f.logger.Warn("Striking remaining job")
-	for k, s := range f.workerSignal {
-		f.signalLock.Lock()
+	f.signalLock.Lock()
+	signals := f.workerSignal
+	f.workerSignal = make(map[string]chan bool)
+	f.signalLock.Unlock()
+	for _, s := range signals {
 		s <- true
-		delete(f.workerSignal, k)
-		f.signalLock.Unlock()
 	}
 	return nil
 }
