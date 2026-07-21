@@ -25,7 +25,10 @@ func main() {
 	os.Remove(dbfile) // start from a clean file for the demo
 
 	gormDB, err := gorm.Open(
-		sqlite.Open(dbfile),
+		// busy_timeout makes a contended writer wait instead of erroring
+		// immediately; see the README's SQLite caveat for why that alone
+		// isn't enough under real concurrency (also cap MaxOpenConns to 1).
+		sqlite.Open(dbfile+"?_pragma=busy_timeout(5000)"),
 		&gorm.Config{
 			Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 		},
@@ -33,6 +36,12 @@ func main() {
 	if err != nil {
 		logger.Error(err.Error())
 		return
+	}
+	// SQLite only ever allows one writer at a time; letting database/sql's
+	// pool open several physical connections just means concurrent writers
+	// hit SQLITE_BUSY against each other instead of queueing behind one.
+	if sqlDB, err := gormDB.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
 	}
 
 	migration, err := os.ReadFile("../../store/gorm/migration_sqlite.sql")

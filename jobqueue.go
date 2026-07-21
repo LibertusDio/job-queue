@@ -3,6 +3,7 @@ package jobqueue
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,6 +11,14 @@ import (
 	union "github.com/LibertusDio/union-go"
 	"github.com/google/uuid"
 )
+
+// addJobLockShards sizes the in-process striped lock used to serialize
+// AddJob/AddJobTransaction/AddJobWithSchedule calls for the same (title,
+// job_id) pair within a single Foreman instance. It's a fixed size (rather
+// than a map keyed by title+job_id) so it needs no cleanup/eviction; a
+// collision between two different keys just means they occasionally
+// serialize against each other unnecessarily, which is safe.
+const addJobLockShards = 256
 
 type position struct {
 	Func HandlerFunc
@@ -26,6 +35,7 @@ type foreman struct {
 	middleware     []MiddlewareFunc
 	jobGovernor    Governor
 	union          union.Union
+	addJobLocks    [addJobLockShards]sync.Mutex
 }
 
 func NewForeman(config *QueueConfig, store JobStorage, logger Logger) Foreman {
@@ -58,11 +68,29 @@ func (f *foreman) AddWorker(title string, workerfunc HandlerFunc, midl ...Middle
 	f.productionLine[title] = position{Func: workerfunc, Midl: midl}
 	return nil
 }
+
+// addJobLock returns the mutex serializing same-instance AddJob*/
+// AddJobTransaction/AddJobWithSchedule calls for a given (title, job_id)
+// pair. This is a same-process fast path only: it lets a duplicate
+// submission on this instance fail without a DB round-trip, and reduces how
+// many callers pile up simultaneously waiting on the store's cross-instance
+// lock. It is not a substitute for that store-level lock (see
+// store/gorm CheckDuplicateJob/CreateJob/InjectJob) - callers on other
+// Foreman instances are unaffected by this mutex.
+func (f *foreman) addJobLock(title, jobID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(title + ":" + jobID))
+	return &f.addJobLocks[h.Sum32()%addJobLockShards]
+}
 func (f *foreman) AddJobTransaction(ctx context.Context, job *Job) error {
 	jd, ok := f.cfg.JobDescription[job.Title]
 	if !ok {
 		return JobError.INVALID_JOB
 	}
+
+	mu := f.addJobLock(job.Title, job.JobID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	if job.ID == "" {
 		job.ID = uuid.NewString()
@@ -91,6 +119,10 @@ func (f *foreman) AddJob(job *Job) error {
 		return JobError.INVALID_JOB
 	}
 
+	mu := f.addJobLock(job.Title, job.JobID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	if job.ID == "" {
 		job.ID = uuid.NewString()
 	}
@@ -118,6 +150,10 @@ func (f *foreman) AddJobWithSchedule(ctx context.Context, job *Job, runat int64)
 	if !ok {
 		return JobError.INVALID_JOB
 	}
+
+	mu := f.addJobLock(job.Title, job.JobID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	if job.ID == "" {
 		job.ID = uuid.NewString()
