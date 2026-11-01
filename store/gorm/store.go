@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"hash/fnv"
+	"sync/atomic"
 	"time"
 
 	jobqueue "github.com/LibertusDio/job-queue"
+	"github.com/LibertusDio/job-queue/internal/sqlerr"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -17,12 +19,21 @@ import (
 // a brief check-then-insert, never a full job execution.
 const mysqlLockTimeoutSeconds = 5
 
+// mysqlErrBinlogStmtModeRowEngine (ER_BINLOG_STMT_MODE_AND_ROW_ENGINE) is what
+// MySQL returns for a write in a READ COMMITTED transaction when binary
+// logging uses binlog_format=STATEMENT.
+const mysqlErrBinlogStmtModeRowEngine = 1665
+
 type gormstore struct {
 	db                   *gorm.DB
 	jobtablename         string
 	schedulejobtablename string
 	contextgormkey       string
 	logger               jobqueue.Logger
+	// claimAtDefaultIsolation is set once the server has refused a READ
+	// COMMITTED claim (see beginClaim). It's a pointer so every copy of this
+	// value-receiver store shares it.
+	claimAtDefaultIsolation *atomic.Bool
 }
 
 func NewGormStore(jobtablename, schedulejobtablename string, contextgormkey string, db *gorm.DB, logger jobqueue.Logger) (jobqueue.JobStorage, error) {
@@ -48,6 +59,8 @@ func NewGormStore(jobtablename, schedulejobtablename string, contextgormkey stri
 		schedulejobtablename: schedulejobtablename,
 		contextgormkey:       contextgormkey,
 		logger:               logger,
+
+		claimAtDefaultIsolation: new(atomic.Bool),
 	}, nil
 }
 
@@ -164,62 +177,93 @@ func (s gormstore) findActiveDuplicate(tx *gorm.DB, job jobqueue.Job) error {
 	return nil
 }
 
-func (s gormstore) CreateJob(ctx context.Context, job jobqueue.Job) error {
-	base, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
-	if !ok {
-		return jobqueue.StoreError.INVALID_GORM_TX
+// findPendingSchedule is CreateScheduleJob's duplicate predicate: a (title,
+// job_id) may have at most one schedule waiting to fire. Active jobs don't
+// count, so a recurring job can schedule its next run while it's processing.
+func (s gormstore) findPendingSchedule(tx *gorm.DB, job jobqueue.ScheduleJob) error {
+	var sj jobqueue.ScheduleJob
+	err := tx.Table(s.schedulejobtablename).
+		Where(" title = ? ", job.Title).
+		Where(" job_id = ? ", job.JobID).
+		Where(" status = ? ", jobqueue.JobStatus.INIT).
+		First(&sj).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
 	}
+	if err == nil {
+		return jobqueue.JobError.DUPLICATE_JOB
+	}
+	return nil
+}
 
+// withJobLock runs fn (a duplicate check followed by an insert) while holding
+// the cross-instance (title, job_id) lock from acquireJobLock.
+//
+// If base is already a transaction the caller owns it and controls when it
+// commits, so fn runs inside it and the lock is released as soon as this call
+// returns rather than when that outer transaction commits (MySQL only; see
+// acquireJobLock's doc comment). Otherwise withJobLock owns the whole unit of
+// work, so the lock is released exactly when the insert is durable.
+func (s gormstore) withJobLock(ctx context.Context, base *gorm.DB, op, title, jobID string, fn func(tx *gorm.DB) error) error {
 	if _, alreadyTx := base.Statement.ConnPool.(gorm.TxCommitter); alreadyTx {
-		// Caller already owns an open transaction (sharing job creation with
-		// its own writes) and controls when it commits - we release as soon
-		// as this call returns rather than when that outer transaction
-		// actually commits (MySQL only; see acquireJobLock's doc comment).
-		release, err := s.acquireJobLock(ctx, base, job.Title, job.JobID)
+		release, err := s.acquireJobLock(ctx, base, title, jobID)
 		if err != nil {
 			return err
 		}
 		defer release()
-
-		if err := s.findActiveDuplicate(base, job); err != nil {
-			return err
-		}
-		return base.Table(s.jobtablename).Create(&job).Error
+		return fn(base)
 	}
 
-	// Plain, not-yet-transactional handle: own the whole unit of work so the
-	// lock is released exactly when the insert is guaranteed durable.
 	committed := false
 	tx := base.Begin()
 	defer func() {
 		if !committed {
 			e := tx.Rollback().Error
 			if e != nil && s.logger != nil {
-				s.logger.Error("[CreateJob] rollback error job: " + job.ID)
+				s.logger.Error("[" + op + "] rollback error: " + title + ":" + jobID)
 			}
 		}
 	}()
 
-	release, err := s.acquireJobLock(ctx, tx, job.Title, job.JobID)
+	release, err := s.acquireJobLock(ctx, tx, title, jobID)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	if err := s.findActiveDuplicate(tx, job); err != nil {
-		return err
-	}
-
-	if err := tx.Table(s.jobtablename).Create(&job).Error; err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
 
 	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[CreateJob] commit error job: " + job.ID)
-	}
 	committed = true
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("[" + op + "] commit error: " + title + ":" + jobID + ": " + err.Error())
+		}
+		return err
+	}
 	return nil
+}
+
+// CreateJob inserts job through the *gorm.DB found in ctx. When that is a
+// transaction the caller opened, a database error leaves it unusable: on
+// MySQL a deadlock (jobqueue.IsRetryable) has already rolled the whole
+// transaction back, and on Postgres any error aborts it. The caller must roll
+// back and retry the transaction, not carry on with it. DUPLICATE_JOB comes
+// from a plain read and leaves the transaction as it was.
+func (s gormstore) CreateJob(ctx context.Context, job jobqueue.Job) error {
+	base, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
+	if !ok {
+		return jobqueue.StoreError.INVALID_GORM_TX
+	}
+
+	return s.withJobLock(ctx, base, "CreateJob", job.Title, job.JobID, func(tx *gorm.DB) error {
+		if err := s.findActiveDuplicate(tx, job); err != nil {
+			return err
+		}
+		return tx.Table(s.jobtablename).Create(&job).Error
+	})
 }
 
 // CheckDuplicateJob is a best-effort, non-authoritative pre-check: it lets
@@ -253,9 +297,36 @@ func (s gormstore) CheckDuplicateJob(job jobqueue.Job) error {
 	return nil
 }
 
+// beginClaim opens GetAndLockAvailableJob's transaction. On MySQL/MariaDB it
+// runs at READ COMMITTED: at the default REPEATABLE READ the claim's FOR
+// UPDATE scan also gap-locks the whole range of pending rows, and concurrent
+// job INSERTs deadlock against those gap locks. Postgres already defaults to
+// READ COMMITTED and has no gap locks; SQLite has no row locks.
+//
+// MySQL rejects READ COMMITTED writes when binlog_format=STATEMENT, so after
+// the first such error the store claims at the server's default level.
+func (s gormstore) beginClaim() *gorm.DB {
+	if s.db.Name() == "mysql" && !s.claimAtDefaultIsolation.Load() {
+		return s.db.Begin(&sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	}
+	return s.db.Begin()
+}
+
+// noteClaimError switches the store to claiming at the default isolation
+// level if err shows the server won't run the claim at READ COMMITTED. With
+// binlog_format=STATEMENT, MySQL raises it on the SELECT ... FOR UPDATE.
+func (s gormstore) noteClaimError(err error) {
+	if n, ok := sqlerr.MySQLNumber(err); !ok || n != mysqlErrBinlogStmtModeRowEngine {
+		return
+	}
+	if !s.claimAtDefaultIsolation.Swap(true) && s.logger != nil {
+		s.logger.Warn("[GetAndLockAvailableJob] binlog_format=STATEMENT rejects READ COMMITTED; claiming jobs at the default isolation level from now on")
+	}
+}
+
 func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription, ignorelist ...string) (*jobqueue.Job, error) {
 	committed := false
-	tx := s.db.Begin()
+	tx := s.beginClaim()
 	defer func() {
 		if !committed {
 			e := tx.Rollback().Error
@@ -289,6 +360,7 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription,
 	}
 	err := query.First(&job).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
+		s.noteClaimError(err)
 		return nil, err
 	}
 
@@ -301,14 +373,18 @@ func (s gormstore) GetAndLockAvailableJob(jd map[string]jobqueue.JobDescription,
 
 	err = tx.Table(s.jobtablename).Save(&job).Where(" id = ? ", job.ID).Error
 	if err != nil {
+		s.noteClaimError(err)
 		return nil, err
 	}
 
 	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[GetAndLockAvailableJob] commit error job: " + job.ID)
-	}
 	committed = true
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("[GetAndLockAvailableJob] commit error job: " + job.ID)
+		}
+		return nil, err
+	}
 
 	return &job, nil
 }
@@ -329,59 +405,41 @@ func (s gormstore) UpdateJobResult(job jobqueue.Job) error {
 		return err
 	}
 	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[UpdateJobResult] commit error job: " + job.ID)
-	}
 	committed = true
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("[UpdateJobResult] commit error job: " + job.ID)
+		}
+		return err
+	}
 	return nil
 }
 
 func (s gormstore) InjectJob(job jobqueue.Job) error {
-	committed := false
-	tx := s.db.Begin()
-	defer func() {
-		if !committed {
-			e := tx.Rollback().Error
-			if e != nil && s.logger != nil {
-				s.logger.Error("[InjectJob] rollback error job: " + job.ID)
-			}
+	return s.withJobLock(context.Background(), s.db, "InjectJob", job.Title, job.JobID, func(tx *gorm.DB) error {
+		if err := s.findActiveDuplicate(tx, job); err != nil {
+			return err
 		}
-	}()
-
-	release, err := s.acquireJobLock(context.Background(), tx, job.Title, job.JobID)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	if err := s.findActiveDuplicate(tx, job); err != nil {
-		return err
-	}
-
-	err = tx.Table(s.jobtablename).Create(&job).Error
-	if err != nil {
-		return err
-	}
-
-	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[InjectJob] commit error job: " + job.ID)
-	}
-	committed = true
-	return nil
+		return tx.Table(s.jobtablename).Create(&job).Error
+	})
 }
 
+// CreateScheduleJob inserts a schedule, rejecting it with DUPLICATE_JOB when
+// one for the same (title, job_id) is already pending. It takes the same
+// (title, job_id) lock as CreateJob/InjectJob, so concurrent callers on any
+// instance can't both pass the check.
 func (s gormstore) CreateScheduleJob(ctx context.Context, job jobqueue.ScheduleJob) error {
-	tx, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
+	base, ok := ctx.Value(s.contextgormkey).(*gorm.DB)
 	if !ok {
 		return jobqueue.StoreError.INVALID_GORM_TX
 	}
 
-	err := tx.Table(s.schedulejobtablename).Create(&job).Error
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.withJobLock(ctx, base, "CreateScheduleJob", job.Title, job.JobID, func(tx *gorm.DB) error {
+		if err := s.findPendingSchedule(tx, job); err != nil {
+			return err
+		}
+		return tx.Table(s.schedulejobtablename).Create(&job).Error
+	})
 }
 
 func (s gormstore) GetScheduledJob(from, to int64) ([]*jobqueue.ScheduleJob, error) {
@@ -422,10 +480,13 @@ func (s gormstore) GetScheduledJob(from, to int64) ([]*jobqueue.ScheduleJob, err
 	}
 
 	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[GetScheduledJob] commit error " + err.Error())
-	}
 	committed = true
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("[GetScheduledJob] commit error " + err.Error())
+		}
+		return nil, err
+	}
 	return jobs, nil
 }
 
@@ -445,9 +506,12 @@ func (s gormstore) UpdateScheduledJob(job jobqueue.ScheduleJob) error {
 		return err
 	}
 	err = tx.Commit().Error
-	if err != nil && s.logger != nil {
-		s.logger.Error("[UpdateScheduledJob] commit error job: " + job.ID)
-	}
 	committed = true
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("[UpdateScheduledJob] commit error job: " + job.ID)
+		}
+		return err
+	}
 	return nil
 }

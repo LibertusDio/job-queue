@@ -18,6 +18,23 @@ services:
       timeout: 5s
       retries: 30
 
+  # MariaDB 10.5 is a common production target and differs from MySQL 8 in
+  # ways that matter to the claim query: no SKIP LOCKED (added in 10.6), and
+  # its own optimizer/locking behavior. Same relaxed-fsync rationale as above.
+  mariadb:
+    image: mariadb:10.5
+    environment:
+      MARIADB_ROOT_PASSWORD: jobqueue
+      MARIADB_DATABASE: jobqueue
+    command: --innodb-flush-log-at-trx-commit=0 --sync-binlog=0
+    ports:
+      - "3308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pjobqueue"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   postgres:
     image: postgres:16
     environment:

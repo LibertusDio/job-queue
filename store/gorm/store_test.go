@@ -13,6 +13,7 @@ import (
 	"time"
 
 	jobqueue "github.com/LibertusDio/job-queue"
+	"github.com/LibertusDio/job-queue/internal/sqlerr"
 
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
@@ -50,16 +51,21 @@ var (
 	mysqlShared     *gorm.DB
 	mysqlSharedErr  error
 
+	mariadbSharedOnce sync.Once
+	mariadbShared     *gorm.DB
+	mariadbSharedErr  error
+
 	postgresSharedOnce sync.Once
 	postgresShared     *gorm.DB
 	postgresSharedErr  error
 )
 
 // testDialects always includes SQLite (no external dependency - a fresh temp
-// file per test) and adds MySQL/Postgres when JOBQUEUE_TEST_MYSQL_DSN /
-// JOBQUEUE_TEST_POSTGRES_DSN are set (see store/gorm/docker-compose.test.yml
-// for a way to stand up both locally). Dialects without a DSN are silently
-// skipped rather than failing, so `go test ./...` works without Docker.
+// file per test) and adds MySQL/MariaDB/Postgres when JOBQUEUE_TEST_MYSQL_DSN /
+// JOBQUEUE_TEST_MARIADB_DSN / JOBQUEUE_TEST_POSTGRES_DSN are set (see
+// store/gorm/docker-compose.test.yml for a way to stand them up locally).
+// Dialects without a DSN are silently skipped rather than failing, so
+// `go test ./...` works without Docker.
 func testDialects(t *testing.T) []testEnv {
 	t.Helper()
 	var envs []testEnv
@@ -72,6 +78,17 @@ func testDialects(t *testing.T) []testEnv {
 		}
 		resetRows(t, mysqlShared)
 		envs = append(envs, newTestEnv(t, "mysql", mysqlShared))
+	}
+
+	// MariaDB speaks the MySQL protocol and shares its migration and gorm
+	// dialector (db.Name() is "mysql"), so the store treats it the same way.
+	if dsn := os.Getenv("JOBQUEUE_TEST_MARIADB_DSN"); dsn != "" {
+		mariadbSharedOnce.Do(func() { mariadbShared, mariadbSharedErr = setupSharedDB(mysql.Open(dsn), migrationMySQL) })
+		if mariadbSharedErr != nil {
+			t.Fatalf("open mariadb: %v", mariadbSharedErr)
+		}
+		resetRows(t, mariadbShared)
+		envs = append(envs, newTestEnv(t, "mariadb", mariadbShared))
 	}
 
 	if dsn := os.Getenv("JOBQUEUE_TEST_POSTGRES_DSN"); dsn != "" {
@@ -451,4 +468,151 @@ func TestClaimAndComplete(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetAndLockAvailableJob_StatementBinlogFallback covers servers logging
+// with binlog_format=STATEMENT, which reject writes from the READ COMMITTED
+// claim transaction (error 1665). The store must fall back to the default
+// isolation level instead of failing every claim, which would stall Serve.
+func TestGetAndLockAvailableJob_StatementBinlogFallback(t *testing.T) {
+	dsns := map[string]string{
+		"mysql":   os.Getenv("JOBQUEUE_TEST_MYSQL_DSN"),
+		"mariadb": os.Getenv("JOBQUEUE_TEST_MARIADB_DSN"),
+	}
+	for _, env := range testDialects(t) {
+		env := env
+		dsn := dsns[env.name]
+		if dsn == "" {
+			continue
+		}
+		t.Run(env.name, func(t *testing.T) {
+			db := openMySQLPool(t, dsn+"&binlog_format=%27STATEMENT%27")
+			var logBin int
+			if err := db.Raw("SELECT @@log_bin").Scan(&logBin).Error; err != nil {
+				t.Fatalf("read log_bin: %v", err)
+			}
+			if logBin == 0 {
+				t.Skip("binary logging is off, so binlog_format doesn't apply")
+			}
+
+			s := newTestEnv(t, env.name, db).store
+			if err := s.InjectJob(newJob("foo", "stmt-binlog")); err != nil {
+				t.Fatalf("InjectJob: %v", err)
+			}
+			jd := map[string]jobqueue.JobDescription{"foo": {Title: "foo", TTL: 30, Concurrent: 1, Priority: 1, MaxRetry: 1}}
+			// The first claim may still hit 1665; the next must not.
+			if _, err := s.GetAndLockAvailableJob(jd); err != nil {
+				t.Logf("first claim: %v", err)
+				if _, err := s.GetAndLockAvailableJob(jd); err != nil {
+					t.Fatalf("claim still failing after fallback: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestIsRetryable_DriverErrors checks jobqueue.IsRetryable against the errors
+// the real drivers return for a lock wait timeout and a deadlock, since it
+// recognizes them without importing the drivers' error types.
+func TestIsRetryable_DriverErrors(t *testing.T) {
+	dsns := map[string]string{
+		"mysql":   os.Getenv("JOBQUEUE_TEST_MYSQL_DSN"),
+		"mariadb": os.Getenv("JOBQUEUE_TEST_MARIADB_DSN"),
+	}
+	for _, env := range testDialects(t) {
+		env := env
+		if env.name == "sqlite" {
+			continue // no row locks
+		}
+		t.Run(env.name, func(t *testing.T) {
+			db := env.db
+			if dsn := dsns[env.name]; dsn != "" {
+				// 1 s is the lowest lock wait timeout MySQL allows (default 50 s).
+				db = openMySQLPool(t, dsn+"&innodb_lock_wait_timeout=1")
+			}
+			a, b := newJob("foo", "retryable-a"), newJob("foo", "retryable-b")
+			for _, job := range []jobqueue.Job{a, b} {
+				if err := env.store.InjectJob(job); err != nil {
+					t.Fatalf("InjectJob: %v", err)
+				}
+			}
+			lock := func(tx *gorm.DB, id string) error {
+				var got string
+				return tx.Raw("SELECT id FROM jobs WHERE id = ? FOR UPDATE", id).Scan(&got).Error
+			}
+			check := func(what string, err error, mysqlNumber uint16, sqlState string) {
+				t.Helper()
+				n, _ := sqlerr.MySQLNumber(err)
+				code, _ := sqlerr.SQLState(err)
+				if n != mysqlNumber && code != sqlState {
+					t.Fatalf("%s: got %v (%T), want MySQL error %d or SQLSTATE %s", what, err, err, mysqlNumber, sqlState)
+				}
+				if !jobqueue.IsRetryable(err) {
+					t.Fatalf("%s: IsRetryable(%v) = false", what, err)
+				}
+				t.Logf("%s: %v", what, err)
+			}
+
+			// Lock wait timeout: tx2 waits for the row tx1 holds.
+			tx1, tx2 := db.Begin(), db.Begin()
+			if err := lock(tx1, a.ID); err != nil {
+				t.Fatalf("lock a: %v", err)
+			}
+			if env.name == "postgres" {
+				if err := tx2.Exec("SET LOCAL lock_timeout = '200ms'").Error; err != nil {
+					t.Fatalf("set lock_timeout: %v", err)
+				}
+			}
+			err := lock(tx2, a.ID)
+			tx1.Rollback()
+			tx2.Rollback()
+			check("lock wait timeout", err, 1205, "55P03")
+
+			// Deadlock: each transaction holds one row and asks for the other's.
+			tx1, tx2 = db.Begin(), db.Begin()
+			if err := lock(tx1, a.ID); err != nil {
+				t.Fatalf("lock a: %v", err)
+			}
+			if err := lock(tx2, b.ID); err != nil {
+				t.Fatalf("lock b: %v", err)
+			}
+			type result struct {
+				tx  *gorm.DB
+				err error
+			}
+			results := make(chan result, 2)
+			go func() { results <- result{tx1, lock(tx1, b.ID)} }()
+			go func() { results <- result{tx2, lock(tx2, a.ID)} }()
+			var errs []error
+			for i := 0; i < 2; i++ {
+				r := <-results
+				r.tx.Rollback() // lets the other transaction finish
+				if r.err != nil {
+					errs = append(errs, r.err)
+				}
+			}
+			if len(errs) != 1 {
+				t.Fatalf("deadlock: got errors %v, want exactly one", errs)
+			}
+			check("deadlock", errs[0], 1213, "40P01")
+		})
+	}
+}
+
+// openMySQLPool opens a separate MySQL/MariaDB pool, closed when the test
+// ends. go-sql-driver/mysql runs DSN params it doesn't know as SET on each new
+// connection, which lets a test change session settings without affecting the
+// shared pool.
+func openMySQLPool(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	})
+	return db
 }

@@ -35,3 +35,4 @@ CREATE INDEX schedule_jobs_priority_IDX ON schedule_jobs USING BTREE (priority);
 CREATE INDEX schedule_jobs_status_IDX ON schedule_jobs USING BTREE (status);
 CREATE INDEX schedule_jobs_updated_at_IDX ON schedule_jobs USING BTREE (updated_at);
 CREATE INDEX schedule_jobs_schedule_IDX ON schedule_jobs USING BTREE (schedule);
+CREATE INDEX schedule_jobs_title_job_id_IDX ON schedule_jobs USING BTREE (title, job_id);
