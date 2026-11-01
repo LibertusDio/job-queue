@@ -35,3 +35,4 @@ CREATE INDEX schedule_jobs_priority_IDX ON schedule_jobs (priority);
 CREATE INDEX schedule_jobs_status_IDX ON schedule_jobs (status);
 CREATE INDEX schedule_jobs_updated_at_IDX ON schedule_jobs (updated_at);
 CREATE INDEX schedule_jobs_schedule_IDX ON schedule_jobs (schedule);
+CREATE INDEX schedule_jobs_title_job_id_IDX ON schedule_jobs (title, job_id);

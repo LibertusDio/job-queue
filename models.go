@@ -16,6 +16,9 @@ type QueueConfig struct {
 	Concurrent     int                       `yaml:"concurrent" mapstructure:"concurrent" json:"concurrent"`    // number of workers can be run, will ignore JD.Concurrent if it >
 	BreakTime      int                       `mapstructure:"break_time" yaml:"break_time" json:"break_time"`    // miliseconds, break between loop
 	RampTime       int                       `mapstructure:"ramp_time" yaml:"ramp_time" json:"ramp_time"`
+	// ScheduleInterval is the time between scheduler passes that fire due
+	// scheduled jobs, in milliseconds. 0 keeps the default of 59 seconds.
+	ScheduleInterval int `mapstructure:"schedule_interval" yaml:"schedule_interval" json:"schedule_interval"`
 }
 
 // system model
